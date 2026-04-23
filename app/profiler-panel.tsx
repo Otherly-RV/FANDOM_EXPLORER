@@ -61,6 +61,16 @@ function deriveOrigin(input: string): string {
   }
 }
 
+async function safeJson(r: Response): Promise<any> {
+  const text = await r.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.slice(0, 300) };
+  }
+}
+
 function titleToUrl(origin: string, title: string): string {
   return `${origin}/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`;
 }
@@ -137,7 +147,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
         try {
           const r = await fetch(`/api/profile/status?jobId=${jobId}`);
           if (!r.ok) return;
-          const j = await r.json();
+          const j = await safeJson(r);
           setJob(j.job);
           if (j.job?.status === "done") {
             clearInterval(pollRef.current);
@@ -169,7 +179,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ origin, refresh }),
       });
-      const j = await r.json();
+      const j = await safeJson(r);
       if (!r.ok) {
         setErr(j.error || `HTTP ${r.status}`);
         return;
@@ -203,7 +213,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     setHubsLoading(true);
     try {
       const r = await fetch(`/api/profile/hubs?origin=${encodeURIComponent(origin)}`);
-      const j = await r.json();
+      const j = await safeJson(r);
       if (r.ok) setHubs(j);
       else setErr(j.error || `HTTP ${r.status}`);
     } catch (e: any) {
@@ -221,7 +231,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
       const r = await fetch(
         `/api/profile/tree?origin=${encodeURIComponent(origin)}&root=${encodeURIComponent(root)}&depth=4`
       );
-      const j = await r.json();
+      const j = await safeJson(r);
       if (r.ok) setTree(j.tree);
       else setErr(j.error || `HTTP ${r.status}`);
     } catch (e: any) {
@@ -251,7 +261,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
       const r = await fetch(
         `/api/profile/classify?origin=${encodeURIComponent(origin)}&title=${encodeURIComponent(title)}`
       );
-      const j = await r.json();
+      const j = await safeJson(r);
       if (r.ok) setClassify(j.record);
       else setErr(j.error || `HTTP ${r.status}`);
     } catch (e: any) {

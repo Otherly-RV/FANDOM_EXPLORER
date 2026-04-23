@@ -9,6 +9,17 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  try {
+    return await handle(req);
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: String(e?.message || e) },
+      { status: 500 }
+    );
+  }
+}
+
+async function handle(req: NextRequest) {
   const originRaw = req.nextUrl.searchParams.get("origin") || "";
   if (!originRaw)
     return NextResponse.json({ error: "origin required" }, { status: 400 });
