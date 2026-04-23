@@ -363,6 +363,38 @@ export default function Explorer() {
   }
   function stopCrawl() { crawlingRef.current = false; }
 
+  // Seed the crawler with a fixed set of URLs (e.g. from the Canon scan).
+  // Each page is enqueued at depth 0 so the crawler fetches it, extracts
+  // its outlinks, and expands from there.
+  async function seedCrawlFromCanon(pages: { url: string; title: string }[]) {
+    if (!pages.length) return;
+    nodesRef.current = {};
+    edgesRef.current = [];
+    queueRef.current = [];
+    visitedRef.current = new Set();
+    selUrlRef.current = null;
+    camRef.current = { x: 0, y: 0, z: 1 };
+    progressRef.current = 0;
+    projectIdRef.current = null;
+    pendingSaveRef.current = { pages: [], edges: [] };
+    // Enqueue every canon page as a depth-0 frontier entry.
+    for (const p of pages) {
+      queueRef.current.push({ url: p.url, depth: 0, parentUrl: null });
+    }
+    // First URL drives project autosave naming + UI input.
+    setUrlIn(pages[0].url);
+    setViewMode("network");
+    setStatus(`Seeded ${pages.length} pages from Canon — starting crawl…`);
+    rerender();
+    const loop = () => {
+      if (Object.values(nodesRef.current).some((n) => n.loading)) {
+        redraw(); requestAnimationFrame(loop);
+      }
+    };
+    requestAnimationFrame(loop);
+    await crawlBFS(pages[0].url);
+  }
+
   // ── projects (Neon) ───────────────────────────────────────────
   const [projects, setProjects] = useState<any[]>([]);
   const [projModal, setProjModal] = useState(false);
@@ -529,7 +561,7 @@ export default function Explorer() {
       <div id="topbar">
         {/* Tab switcher */}
         <div style={{ display: "flex", gap: 2, background: "#eceef4", padding: 2, borderRadius: 6 }}>
-          {(["crawl", "sitemap", "canon"] as const).map((t) => (
+          {(["sitemap", "canon", "crawl"] as const).map((t) => (
             <button
               key={t}
               className={`tbtn${tab === t ? " active" : ""}`}
@@ -586,9 +618,11 @@ export default function Explorer() {
             {viewMode === "network" ? "Show Tree" : "Show Network"}
           </button>
           <button className="tbtn" onClick={() => setAllExpanded((v) => !v)}>{allExpanded ? "Collapse All" : "Expand All"}</button>
-          <button className="tbtn" onClick={saveProject}>💾 Save</button>
-          <button className="tbtn" onClick={openProjects}>📁 Projects</button>
         </>}
+
+        {/* Always-available persistence for crawl projects */}
+        <button className="tbtn" onClick={saveProject} title="Save current crawl to the server">💾 Save</button>
+        <button className="tbtn" onClick={openProjects} title="Open a saved crawl project">📁 Projects</button>
       </div>
       <div id="progress" style={{ width: progressRef.current + "%" }} />
       <div id="main">
@@ -608,7 +642,7 @@ export default function Explorer() {
             display: viewMode === "canon-analysis" ? "block" : "none",
           }}
         >
-          <CanonPanel urlIn={urlIn} />
+          <CanonPanel urlIn={urlIn} onSeedCrawl={seedCrawlFromCanon} />
         </div>
         <div id="left" style={{ display: viewMode === "canon" || viewMode === "canon-analysis" ? "none" : undefined }}>
           <div id="left-hdr">

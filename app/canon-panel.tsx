@@ -72,7 +72,13 @@ function deriveOrigin(input: string): string {
   try { return new URL(input).origin; } catch { return ""; }
 }
 
-export default function CanonPanel({ urlIn }: { urlIn: string }) {
+export default function CanonPanel({
+  urlIn,
+  onSeedCrawl,
+}: {
+  urlIn: string;
+  onSeedCrawl?: (pages: { url: string; title: string }[]) => void;
+}) {
   const origin = deriveOrigin(urlIn);
   const [modelId, setModelId] = useState<string>("gemini-3.1-pro-preview");
   const [pageBudget, setPageBudget] = useState<string>("300"); // "unlimited" or number string
@@ -531,6 +537,18 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
               >
                 {saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : saveState === "error" ? "Save failed" : "💾 Save project"}
               </button>
+              {onSeedCrawl && (
+                <button
+                  className="tbtn"
+                  onClick={() => {
+                    const pages = groups.flatMap((g) =>
+                      g.pages.map((p) => ({ url: p.url, title: p.title }))
+                    );
+                    if (pages.length) onSeedCrawl(pages);
+                  }}
+                  title="Send every Canon page to the Crawl tab as its starting frontier"
+                >🌱 Seed Crawl ({groups.reduce((n, g) => n + g.pages.length, 0).toLocaleString()})</button>
+              )}
             </>
           )}
           {snapshots.length > 0 && (
