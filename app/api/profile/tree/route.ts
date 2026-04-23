@@ -73,10 +73,11 @@ async function handle(req: NextRequest) {
   const names = [...byName.keys()];
   if (names.length) {
     const counts = (await sql`
-      SELECT category, COUNT(*)::int AS c
-      FROM wiki_pages
-      WHERE origin = ${origin} AND category = ANY(${names}::text[])
-      GROUP BY category
+      SELECT cat AS category, COUNT(*)::int AS c
+      FROM wiki_pages,
+           LATERAL jsonb_array_elements_text(categories) AS cat
+      WHERE origin = ${origin} AND cat = ANY(${names}::text[])
+      GROUP BY cat
     `) as any[];
     for (const row of counts) {
       const n = byName.get(row.category);

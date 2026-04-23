@@ -43,6 +43,21 @@ type Hubs = { hubs: Record<string, Record<string, string[]>>; count: number };
 
 type TreeNode = { name: string; pageCount: number; children: TreeNode[] };
 
+type OverviewBucket = {
+  id: string;
+  label: string;
+  pageCount: number;
+  categoryCount: number;
+  topCategories: { name: string; pageCount: number; samplePages: string[] }[];
+};
+type Overview = {
+  origin: string;
+  totals: { pages: number; categories: number; hub_links: number };
+  buckets: OverviewBucket[];
+  scannedCategories?: number;
+  note?: string;
+};
+
 type ClassifyRecord = {
   title: string;
   canonStatus: "canon" | "legends" | "ambiguous" | "unknown";
@@ -85,6 +100,8 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
   const [treeRoot, setTreeRoot] = useState<string>("");
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [treeLoading, setTreeLoading] = useState(false);
+  const [overview, setOverview] = useState<Overview | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
   const [classify, setClassify] = useState<ClassifyRecord | null>(null);
   const [classifyLoading, setClassifyLoading] = useState(false);
   const [err, setErr] = useState<string>("");
@@ -120,12 +137,14 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     loadProfile();
     setHubs(null);
     setTree(null);
+    setOverview(null);
     setClassify(null);
   }, [loadProfile]);
 
-  // Auto-load tree + hubs when a profile becomes available.
+  // Auto-load overview + tree + hubs when a profile becomes available.
   useEffect(() => {
     if (!profile) return;
+    if (!overview) loadOverview();
     if (!tree && profile.root_cats.length) {
       // Prefer a root that isn't the generic "Browse" or "Articles" if a
       // better one exists; otherwise fall back to the first.
@@ -205,6 +224,23 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
       }
     } catch (e: any) {
       setErr(e.message || "failed");
+    }
+  }
+
+  async function loadOverview() {
+    if (!origin) return;
+    setOverviewLoading(true);
+    try {
+      const r = await fetch(
+        `/api/profile/overview?origin=${encodeURIComponent(origin)}`
+      );
+      const j = await safeJson(r);
+      if (r.ok) setOverview(j);
+      else setErr(j.error || `HTTP ${r.status}`);
+    } catch (e: any) {
+      setErr(e.message || "failed");
+    } finally {
+      setOverviewLoading(false);
     }
   }
 
@@ -439,6 +475,27 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
       {/* Profile output */}
       {profile && (
         <>
+          {/* Organized overview — the "how is this wiki built" answer */}
+          <Section title="How this wiki is organized">
+            {overviewLoading && !overview && (
+              <div className="tlabel">Building overview…</div>
+            )}
+            {overview && (
+              <OverviewView
+                origin={origin}
+                overview={overview}
+                onPickRoot={(name) => loadTree(name)}
+                onRefresh={loadOverview}
+                refreshing={overviewLoading}
+              />
+            )}
+            {!overview && !overviewLoading && (
+              <button className="tbtn" onClick={loadOverview}>
+                Load overview
+              </button>
+            )}
+          </Section>
+
           {/* Canon policy */}
           <Section title="Canon policy">
             <PolicyView policy={profile.canon_policy} />
@@ -710,6 +767,209 @@ function TreeItem({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Overview: semantic buckets of the wiki's structure.
+// ---------------------------------------------------------------------------
+
+const BUCKET_COLORS: Record<string, string> = {
+  canon: "#5c54e8",
+  characters: "#d9507a",
+  factions: "#b04aa0",
+  species: "#3d8f8f",
+  locations: "#2d8f50",
+  events: "#e07a38",
+  media: "#c9a227",
+  objects: "#6a6aa0",
+  concepts: "#8a7a5a",
+  meta: "#999",
+  other: "#aaa",
+};
+
+function OverviewView({
+  origin,
+  overview,
+  onPickRoot,
+  onRefresh,
+  refreshing,
+}: {
+  origin: string;
+  overview: {
+    totals: { pages: number; categories: number; hub_links: number };
+    buckets: OverviewBucket[];
+    scannedCategories?: number;
+    note?: string;
+  };
+  onPickRoot: (name: string) => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const { totals, buckets, scannedCategories, note } = overview;
+  if (note && buckets.length === 0) {
+    return <div className="tlabel">{note}</div>;
+  }
+  return (
+    <div style={{ fontSize: 12 }}>
+      {/* Totals bar */}
+      <div
+        style={{
+          display: "flex",
+          gap: 14,
+          flexWrap: "wrap",
+          alignItems: "center",
+          padding: "6px 10px",
+          background: "#f6f7fb",
+          border: "1px solid #e2e4ec",
+          borderRadius: 8,
+          marginBottom: 10,
+        }}
+      >
+        <Metric label="pages" value={totals.pages} />
+        <Metric label="categories" value={totals.categories} />
+        <Metric label="hub links" value={totals.hub_links} />
+        {scannedCategories != null && (
+          <span className="tlabel">
+            classified top {scannedCategories} cats by page count
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        <button className="tbtn" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? "…" : "Refresh"}
+        </button>
+      </div>
+
+      {/* Buckets */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {buckets.map((b) => (
+          <BucketCard
+            key={b.id}
+            bucket={b}
+            origin={origin}
+            onPickRoot={onPickRoot}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={{ display: "flex", gap: 4, alignItems: "baseline" }}>
+      <b style={{ fontSize: 14 }}>{value.toLocaleString()}</b>
+      <span className="tlabel">{label}</span>
+    </div>
+  );
+}
+
+function BucketCard({
+  bucket,
+  origin,
+  onPickRoot,
+}: {
+  bucket: OverviewBucket;
+  origin: string;
+  onPickRoot: (name: string) => void;
+}) {
+  const color = BUCKET_COLORS[bucket.id] || "#888";
+  return (
+    <div
+      style={{
+        border: "1px solid #e2e4ec",
+        borderLeft: `3px solid ${color}`,
+        borderRadius: 8,
+        padding: 10,
+        background: "#fff",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 6,
+          marginBottom: 6,
+        }}
+      >
+        <span style={{ fontWeight: 600, color, fontSize: 12 }}>
+          {bucket.label}
+        </span>
+        <span className="tlabel" style={{ marginLeft: "auto" }}>
+          {bucket.pageCount.toLocaleString()} pages · {bucket.categoryCount} cats
+        </span>
+      </div>
+      {bucket.topCategories.length === 0 && (
+        <div className="tlabel">No categories.</div>
+      )}
+      {bucket.topCategories.map((c) => (
+        <div key={c.name} style={{ marginBottom: 6 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              gap: 6,
+            }}
+          >
+            <a
+              href={`${origin}/wiki/Category:${encodeURIComponent(
+                c.name.replace(/ /g, "_")
+              )}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                fontSize: 12,
+                color: "#2a2a3f",
+                textDecoration: "none",
+                fontWeight: 500,
+              }}
+            >
+              {c.name}
+            </a>
+            <span className="tlabel">{c.pageCount}</span>
+            <button
+              className="tbtn"
+              style={{ marginLeft: "auto", fontSize: 10, padding: "1px 6px" }}
+              onClick={() => onPickRoot(c.name)}
+              title="Use as DAG root below"
+            >
+              drill
+            </button>
+          </div>
+          {c.samplePages.length > 0 && (
+            <div
+              className="tlabel"
+              style={{
+                fontSize: 10,
+                marginLeft: 2,
+                lineHeight: 1.4,
+                color: "#777",
+              }}
+            >
+              {c.samplePages.slice(0, 5).map((t, i) => (
+                <span key={t}>
+                  {i > 0 && " · "}
+                  <a
+                    href={titleToUrl(origin, t)}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: "#777", textDecoration: "none" }}
+                  >
+                    {t}
+                  </a>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
