@@ -41,6 +41,8 @@ type Group = {
   isType?: boolean;
   done?: boolean;
   pages: PageRow[];
+  allTitles: string[];    // every title from the inventory (unchunked)
+  fetched: number;        // how many have been loaded so far
 };
 
 type Meta = {
@@ -96,13 +98,12 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
     const ctl = new AbortController();
     abortRef.current = ctl;
     try {
+      // ---------- STAGE 1: inventory (titles only) ----------
       const r = await fetch("/api/canon/inventory", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           origin,
-          provider: opt.provider,
-          model: opt.id,
           pageBudget: pageBudget === "unlimited" ? 0 : Number(pageBudget),
           perCategory: pageBudget === "unlimited" ? 0 : undefined,
         }),
@@ -110,7 +111,7 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
       });
       if (!r.ok || !r.body) {
         const t = await r.text();
-        throw new Error(`HTTP ${r.status}: ${t.slice(0, 400)}`);
+        throw new Error(`inventory HTTP ${r.status}: ${t.slice(0, 400)}`);
       }
       const reader = r.body.getReader();
       const dec = new TextDecoder();
@@ -125,67 +126,172 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
           buf = buf.slice(idx + 2);
           const ev = parseSSE(raw);
           if (!ev) continue;
-          switch (ev.event) {
-            case "progress":
-              setProgress((p) => [...p, String(ev.data?.step || "")]);
-              break;
-            case "meta":
-              setMeta(ev.data as Meta);
-              break;
-            case "group_start": {
-              const g: Group = {
-                gid: ev.data.gid,
-                category: ev.data.category,
-                totalMembers: ev.data.totalMembers,
-                sampled: ev.data.sampled,
-                pages: [],
-              };
-              upsertGroup((prev) => [...prev, g]);
-              break;
-            }
-            case "group_type": {
-              const { gid, template, matched, total, share, isType } = ev.data;
-              upsertGroup((prev) =>
-                prev.map((g) =>
-                  g.gid === gid
-                    ? { ...g, template, matched, total, share, isType }
-                    : g
-                )
-              );
-              break;
-            }
-            case "page": {
-              const p: PageRow = {
-                gid: ev.data.gid,
-                title: ev.data.title,
-                url: ev.data.url,
-                template: ev.data.template,
-                fields: ev.data.fields || [],
-                lead: ev.data.lead || "",
-                sections: ev.data.sections || [],
-              };
-              upsertGroup((prev) =>
-                prev.map((g) => (g.gid === p.gid ? { ...g, pages: [...g.pages, p] } : g))
-              );
-              break;
-            }
-            case "group_end": {
-              const { gid } = ev.data;
-              upsertGroup((prev) =>
-                prev.map((g) => (g.gid === gid ? { ...g, done: true } : g))
-              );
-              break;
-            }
-            case "thinking":
-              setThinking((t) => t + String(ev.data?.text || ""));
-              break;
-            case "explanation":
-              setExplanation(String(ev.data?.text || ""));
-              break;
-            case "error":
-              setError(String(ev.data?.error || "stream error"));
-              break;
+          if (ev.event === "progress") {
+            setProgress((p) => [...p, String(ev.data?.step || "")]);
+          } else if (ev.event === "meta") {
+            setMeta(ev.data as Meta);
+          } else if (ev.event === "group") {
+            const { gid, category, totalMembers, titles } = ev.data;
+            const cap = pageBudget === "unlimited" ? titles.length : Math.min(titles.length, Number(pageBudget) || titles.length);
+            const allTitles: string[] = titles.slice(0, cap);
+            const g: Group = {
+              gid,
+              category,
+              totalMembers,
+              sampled: allTitles.length,
+              pages: [],
+              allTitles,
+              fetched: 0,
+            };
+            upsertGroup((prev) => [...prev, g]);
+          } else if (ev.event === "error") {
+            setError(String(ev.data?.error || "inventory error"));
           }
+        }
+      }
+
+      if (ctl.signal.aborted) return;
+      const invGroups = groupsRef.current.slice();
+      const totalTitles = invGroups.reduce((n, g) => n + g.allTitles.length, 0);
+      setProgress((p) => [...p, `inventory done · ${invGroups.length} categories · ${totalTitles} pages to load`]);
+
+      // ---------- STAGE 2: fetch page content in chunks ----------
+      // Use a single shared queue across all groups so concurrency is global
+      // and progress feels smooth. Each request asks for 20 titles.
+      const BATCH = 20;
+      const PARALLEL_REQUESTS = 3; // concurrent chunk requests
+
+      type Task = { gid: number; titles: string[] };
+      const queue: Task[] = [];
+      for (const g of invGroups) {
+        for (let i = 0; i < g.allTitles.length; i += BATCH) {
+          queue.push({ gid: g.gid, titles: g.allTitles.slice(i, i + BATCH) });
+        }
+      }
+      let totalFetched = 0;
+      let qi = 0;
+      async function worker() {
+        while (qi < queue.length) {
+          if (ctl.signal.aborted) return;
+          const cur = qi++;
+          const task = queue[cur];
+          try {
+            const resp = await fetch("/api/canon/pages", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ origin, titles: task.titles }),
+              signal: ctl.signal,
+            });
+            if (!resp.ok) continue;
+            const js = await resp.json();
+            const pages: any[] = js.pages || [];
+            upsertGroup((prev) => prev.map((g) => {
+              if (g.gid !== task.gid) return g;
+              const merged = pages.map((p) => ({
+                gid: task.gid,
+                title: p.title,
+                url: p.url,
+                template: p.template,
+                fields: p.fields || [],
+                lead: p.lead || "",
+                sections: p.sections || [],
+              }));
+              return {
+                ...g,
+                pages: [...g.pages, ...merged],
+                fetched: g.fetched + merged.length,
+              };
+            }));
+            totalFetched += pages.length;
+            setProgress((p) => {
+              const last = p[p.length - 1];
+              const msg = `fetching content… ${totalFetched}/${totalTitles}`;
+              if (last && last.startsWith("fetching content…")) return [...p.slice(0, -1), msg];
+              return [...p, msg];
+            });
+          } catch (e: any) {
+            if (e?.name === "AbortError") return;
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: PARALLEL_REQUESTS }, () => worker()));
+
+      if (ctl.signal.aborted) return;
+
+      // ---------- STAGE 2b: classify groups (dominant infobox) ----------
+      upsertGroup((prev) => prev.map((g) => {
+        const counts = new Map<string, number>();
+        for (const p of g.pages) {
+          if (p.template) {
+            const k = p.template.toLowerCase();
+            counts.set(k, (counts.get(k) || 0) + 1);
+          }
+        }
+        let dominant: string | undefined;
+        let dominantCount = 0;
+        for (const [k, v] of counts) {
+          if (v > dominantCount) { dominant = k; dominantCount = v; }
+        }
+        const share = g.pages.length ? dominantCount / g.pages.length : 0;
+        const isType = !!dominant && share >= 0.35;
+        return {
+          ...g,
+          template: isType ? dominant : undefined,
+          matched: dominantCount,
+          total: g.pages.length,
+          share: Math.round(share * 100),
+          isType,
+          done: true,
+        };
+      }));
+
+      // ---------- STAGE 3: meta narrative ----------
+      setProgress((p) => [...p, `calling ${opt.provider} · ${opt.id} for meta explanation`]);
+      const llmGroups = groupsRef.current.map((g) => ({
+        category: g.category,
+        template: g.template,
+        total: g.totalMembers,
+        sampled: g.pages.length,
+        isType: g.isType === true,
+        pages: g.pages.slice(0, 20).map((p) => ({
+          title: p.title,
+          fieldKeys: p.fields.map(([k]) => k),
+          sectionHeadings: p.sections.map((s) => s.heading),
+        })),
+      }));
+      const narr = await fetch("/api/canon/narrative", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: opt.provider,
+          model: opt.id,
+          site: {
+            sitename: meta?.sitename || origin,
+            origin,
+            articles: meta?.articles || 0,
+          },
+          groups: llmGroups,
+        }),
+        signal: ctl.signal,
+      });
+      if (!narr.ok || !narr.body) {
+        throw new Error(`narrative HTTP ${narr.status}`);
+      }
+      const nReader = narr.body.getReader();
+      let nBuf = "";
+      while (true) {
+        const { value, done } = await nReader.read();
+        if (done) break;
+        nBuf += dec.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = nBuf.indexOf("\n\n")) >= 0) {
+          const raw = nBuf.slice(0, idx);
+          nBuf = nBuf.slice(idx + 2);
+          const ev = parseSSE(raw);
+          if (!ev) continue;
+          if (ev.event === "thinking") setThinking((t) => t + String(ev.data?.text || ""));
+          else if (ev.event === "explanation") setExplanation(String(ev.data?.text || ""));
+          else if (ev.event === "error") setError(String(ev.data?.error || "narrative error"));
         }
       }
     } catch (e: any) {
@@ -194,7 +300,7 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
       setLoading(false);
       abortRef.current = null;
     }
-  }, [origin, modelId, pageBudget, upsertGroup]);
+  }, [origin, modelId, pageBudget, meta, upsertGroup]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
