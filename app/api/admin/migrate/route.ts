@@ -4,7 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { sql } from "@/lib/db";
+import { neon } from "@neondatabase/serverless";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +21,15 @@ async function run(req: NextRequest) {
   if (token !== expected)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  // Read schema.sql at request time (bundled via process.cwd()).
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl)
+    return NextResponse.json(
+      { error: "DATABASE_URL not set" },
+      { status: 500 }
+    );
+  const db = neon(dbUrl);
+
+  // Read schema.sql at request time.
   let schema: string;
   try {
     schema = readFileSync(join(process.cwd(), "lib", "schema.sql"), "utf8");
@@ -32,17 +40,22 @@ async function run(req: NextRequest) {
     );
   }
 
-  const stmts = schema
-    .split(/;\s*\n/)
+  // Strip SQL line comments, then split on semicolons. Skip empty or comment-only chunks.
+  const stripped = schema
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*--/.test(line))
+    .join("\n");
+  const stmts = stripped
+    .split(/;\s*(?:\n|$)/)
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter((s) => s.length > 0);
 
   const applied: string[] = [];
   const errors: { stmt: string; error: string }[] = [];
   for (const s of stmts) {
     try {
-      // @ts-ignore - neon exposes .query for raw SQL
-      await (sql as any).query(s);
+      // neon's raw query method.
+      await (db as any).query(s);
       applied.push(s.split("\n")[0].slice(0, 80));
     } catch (e: any) {
       errors.push({ stmt: s.split("\n")[0].slice(0, 80), error: String(e.message || e) });
