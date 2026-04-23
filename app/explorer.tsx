@@ -475,6 +475,15 @@ export default function Explorer() {
     };
   }, []);
 
+  // When returning from canon view, the network wrap was display:none so
+  // the canvas shrank to 0x0. Force a redraw once the layout settles.
+  useEffect(() => {
+    if (viewMode === "network") {
+      const id = requestAnimationFrame(() => redraw());
+      return () => cancelAnimationFrame(id);
+    }
+  }, [viewMode]);
+
   function scrollToCard(url: string) {
     selUrlRef.current = url; redraw(); rerender();
     const el = document.getElementById(cardId(url));
