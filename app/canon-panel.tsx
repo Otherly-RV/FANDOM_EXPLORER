@@ -63,6 +63,7 @@ function deriveOrigin(input: string): string {
 export default function CanonPanel({ urlIn }: { urlIn: string }) {
   const origin = deriveOrigin(urlIn);
   const [modelId, setModelId] = useState<string>("gemini-3.1-pro-preview");
+  const [pageBudget, setPageBudget] = useState<string>("300"); // "unlimited" or number string
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -98,7 +99,13 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
       const r = await fetch("/api/canon/inventory", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ origin, provider: opt.provider, model: opt.id }),
+        body: JSON.stringify({
+          origin,
+          provider: opt.provider,
+          model: opt.id,
+          pageBudget: pageBudget === "unlimited" ? 0 : Number(pageBudget),
+          perCategory: pageBudget === "unlimited" ? 0 : undefined,
+        }),
         signal: ctl.signal,
       });
       if (!r.ok || !r.body) {
@@ -187,7 +194,7 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
       setLoading(false);
       abortRef.current = null;
     }
-  }, [origin, modelId, upsertGroup]);
+  }, [origin, modelId, pageBudget, upsertGroup]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -230,6 +237,21 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
             {MODEL_OPTIONS.map((m) => (
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
+          </select>
+          <select
+            value={pageBudget}
+            onChange={(e) => setPageBudget(e.target.value)}
+            className="tbtn"
+            style={{ appearance: "auto", fontSize: 11 }}
+            disabled={loading}
+            title="How many pages to fetch across the whole wiki"
+          >
+            <option value="100">100 pages</option>
+            <option value="300">300 pages</option>
+            <option value="600">600 pages</option>
+            <option value="1500">1,500 pages</option>
+            <option value="5000">5,000 pages</option>
+            <option value="unlimited">All pages (slow)</option>
           </select>
           {!loading ? (
             <button className="tbtn primary" onClick={run}>

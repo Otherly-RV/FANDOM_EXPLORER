@@ -47,14 +47,17 @@ const DEFAULT_MODEL: Record<Provider, string> = {
   claude: "claude-sonnet-4-6",
 };
 
-// Tunables — pages now carry full prose, so keep counts conservative.
+// Tunables — defaults. All overridable via request body.
 const TOP_CATEGORIES_TO_SCAN = 40;      // categories considered for grouping
-const MAX_PAGES_PER_CATEGORY = 25;      // per-group page cap
+const MAX_PAGES_PER_CATEGORY = 25;      // per-group page cap (default)
 const MIN_MEMBERS_FOR_GROUP = 4;        // skip tiny categories
 const MIN_TEMPLATE_SHARE = 0.35;        // category counts as a "type" if this share of sampled pages share one infobox template
-const GLOBAL_PAGE_BUDGET = 300;         // hard cap across all groups
+const GLOBAL_PAGE_BUDGET = 300;         // hard cap across all groups (default)
 const PAGE_CONCURRENCY = 6;
 const GROUP_CONCURRENCY = 3;
+
+// Sentinel for "no cap".
+const UNLIMITED = Number.POSITIVE_INFINITY;
 
 export async function POST(req: NextRequest) {
   let body: any = {};
@@ -62,6 +65,11 @@ export async function POST(req: NextRequest) {
   const rawOrigin: string = body.origin || body.url || "";
   const provider: Provider = body.provider === "claude" ? "claude" : "gemini";
   const requestedModel: string | undefined = body.model;
+
+  // Budget overrides. Pass 0 or negative for unlimited.
+  const pageBudget = normalizeBudget(body.pageBudget, GLOBAL_PAGE_BUDGET);
+  const perCategory = normalizeBudget(body.perCategory, MAX_PAGES_PER_CATEGORY);
+  const topCategories = normalizeBudget(body.topCategories, TOP_CATEGORIES_TO_SCAN);
 
   let origin = "";
   try {
@@ -106,15 +114,15 @@ export async function POST(req: NextRequest) {
         const candidate = catsRaw
           .filter((c) => !isAdminCategory(c.name))
           .filter((c) => c.pages >= MIN_MEMBERS_FOR_GROUP)
-          .slice(0, TOP_CATEGORIES_TO_SCAN);
+          .slice(0, isFinite(topCategories) ? topCategories : catsRaw.length);
 
         send("progress", {
-          step: `scanning top ${candidate.length} categories (budget ${GLOBAL_PAGE_BUDGET} pages)`,
+          step: `scanning top ${candidate.length} categories · budget ${isFinite(pageBudget) ? pageBudget + " pages" : "unlimited"}`,
         });
 
         // Track what we've emitted for the LLM context.
         const inventoryForLLM: InventoryForLLM = { groups: [] };
-        let budget = GLOBAL_PAGE_BUDGET;
+        let budget = pageBudget;
 
         // Process groups with bounded concurrency, but emit events sequentially
         // (JS ReadableStream controllers are single-producer-safe).
@@ -130,7 +138,7 @@ export async function POST(req: NextRequest) {
               origin,
               c.name,
               "page",
-              MAX_PAGES_PER_CATEGORY
+              isFinite(perCategory) ? perCategory : Infinity
             );
             members = mem.filter((m) => m.ns === 0).map((m) => ({ title: m.title }));
           } catch {
@@ -274,6 +282,15 @@ function sseHeaders(): HeadersInit {
     connection: "keep-alive",
     "x-accel-buffering": "no",
   };
+}
+
+// 0, negative, null, undefined, or "unlimited" => Infinity. Otherwise coerce to a safe positive integer.
+function normalizeBudget(v: any, fallback: number): number {
+  if (v === "unlimited" || v === Infinity) return UNLIMITED;
+  const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n <= 0) return UNLIMITED;
+  return Math.min(Math.floor(n), 100000);
 }
 
 // ===========================================================================
