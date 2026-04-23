@@ -2,7 +2,7 @@
 // Internal worker endpoint. Runs one chunk of work for a job, then — if more
 // work remains — fires a fresh fetch to itself so we stay under Vercel's
 // per-invocation time limit without losing progress.
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { runChunk } from "@/lib/profiler/worker";
 
 export const runtime = "nodejs";
@@ -17,10 +17,12 @@ export async function POST(req: NextRequest) {
   try {
     const res = await runChunk(jobId);
     if (!res.done) {
-      // Self-reinvoke — fire and forget.
+      // Self-reinvoke via after() so Vercel doesn't cancel the outgoing fetch.
       const runUrl = new URL("/api/profile/run", req.nextUrl.origin);
       runUrl.searchParams.set("jobId", jobId);
-      fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+      after(async () => {
+        await fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+      });
     }
     return NextResponse.json(res);
   } catch (e: any) {

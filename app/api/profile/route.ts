@@ -1,13 +1,14 @@
 // app/api/profile/route.ts
 // POST { origin | url, refresh? } -> starts a profiling job (or returns existing)
 // GET  ?origin=...                -> returns the cached profile (or 404)
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { parseFandomOrigin } from "@/lib/mw";
 import {
   createJob,
   findActiveJob,
   getProfile,
 } from "@/lib/profiler/cache";
+import { runChunk } from "@/lib/profiler/worker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -101,10 +102,20 @@ export async function POST(req: NextRequest) {
   const jobId = newId();
   await createJob(jobId, origin);
 
-  // Fire-and-forget kick the worker. Don't await.
+  // Run the first chunk in the background with Vercel's after(), then
+  // let that chunk handle self-reinvocation via /api/profile/run.
   const runUrl = new URL("/api/profile/run", req.nextUrl.origin);
   runUrl.searchParams.set("jobId", jobId);
-  fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+  after(async () => {
+    try {
+      const res = await runChunk(jobId);
+      if (!res.done) {
+        await fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+      }
+    } catch (e) {
+      // swallow — error is recorded on the job row
+    }
+  });
 
   return NextResponse.json({ origin, status: "queued", jobId, cached: false });
 }
