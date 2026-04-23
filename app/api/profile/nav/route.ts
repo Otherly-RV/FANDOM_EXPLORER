@@ -109,23 +109,51 @@ function parseNav(text: string): NavNode[] {
 }
 
 // Turn a single menu-item content string into a NavNode.
-// Supported forms:
-//   [[Target|Label]]
-//   [[Target]]
-//   #category#Cat Name (rare Fandom extension — treat as header)
-//   Plain text                            (header, no link)
+// Fandom's real MediaWiki:Wiki-navigation format (no [[ ]] brackets):
+//   *Target|Label
+//   *Target                 (label defaults to target)
+//   *Category:Foo|Label
+//   *Special:Community|Label
+//   *http://external|Label   → external link (we keep as-is)
+//   *#category-Foo#|Label    → special category shortcut
+//   *[[Target|Label]]        → also accepted (legacy/other wikis)
 function toNode(content: string): NavNode {
-  // Strip leading "#category#" or similar prefixes used by some wikis.
-  const cleaned = content.replace(/^#[^#]+#/, "").trim();
-  const link = cleaned.match(/^\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/);
-  if (link) {
-    const target = link[1].trim().replace(/_/g, " ");
-    const label = (link[2] || target).trim();
+  let s = content.trim();
+  // Legacy / other-wikis form with [[ ]].
+  const bracketed = s.match(/^\[\[([^\]|]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]$/);
+  if (bracketed) {
+    const target = bracketed[1].trim().replace(/_/g, " ");
+    const label = (bracketed[2] || target).trim();
     return { label, target, children: [] };
   }
-  // Plain header.
-  return {
-    label: cleaned.replace(/[*\[\]|]/g, "").trim() || "(unnamed)",
-    children: [],
-  };
+  // Strip #prefix# wrappers (#category-…#, #visited#, #new#, …).
+  // The inner value is still the effective target.
+  const wrapped = s.match(/^#([^#|]+)#(?:\|(.+))?$/);
+  if (wrapped) {
+    const inner = wrapped[1].trim();
+    const label = (wrapped[2] || inner).trim();
+    // #category-Foo# → Category:Foo page.
+    const catMatch = inner.match(/^category-(.+)$/i);
+    if (catMatch) {
+      return {
+        label,
+        target: `Category:${catMatch[1].replace(/_/g, " ").trim()}`,
+        children: [],
+      };
+    }
+    // Other magic shortcuts have no navigable target.
+    return { label, children: [] };
+  }
+  // Plain `Target|Label` or `Target`.
+  const pipe = s.indexOf("|");
+  let target = (pipe >= 0 ? s.slice(0, pipe) : s).trim();
+  const label = (pipe >= 0 ? s.slice(pipe + 1) : s).trim();
+  if (!target) return { label: label || "(unnamed)", children: [] };
+  // External URL → keep as a non-navigable label with an href hint.
+  if (/^https?:\/\//i.test(target)) {
+    return { label, target, children: [] };
+  }
+  // Internal wiki page (any namespace).
+  target = target.replace(/_/g, " ");
+  return { label: label || target, target, children: [] };
 }
