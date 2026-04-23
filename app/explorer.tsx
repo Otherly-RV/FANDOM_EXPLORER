@@ -509,49 +509,86 @@ export default function Explorer() {
     );
   }
 
+  const tab: "crawl" | "sitemap" | "canon" =
+    viewMode === "canon" ? "sitemap"
+    : viewMode === "canon-analysis" ? "canon"
+    : "crawl";
+
+  function switchTab(t: "crawl" | "sitemap" | "canon") {
+    if (t === "crawl") {
+      if (viewMode !== "network" && viewMode !== "tree") setViewMode("network");
+    } else if (t === "sitemap") {
+      setViewMode("canon");
+    } else {
+      setViewMode("canon-analysis");
+    }
+  }
+
   return (
     <>
       <div id="topbar">
+        {/* Tab switcher */}
+        <div style={{ display: "flex", gap: 2, background: "#eceef4", padding: 2, borderRadius: 6 }}>
+          {(["crawl", "sitemap", "canon"] as const).map((t) => (
+            <button
+              key={t}
+              className={`tbtn${tab === t ? " active" : ""}`}
+              onClick={() => switchTab(t)}
+              style={{
+                background: tab === t ? "#fff" : "transparent",
+                border: tab === t ? "1px solid #d9dbe6" : "1px solid transparent",
+                fontWeight: tab === t ? 700 : 500,
+                textTransform: "capitalize",
+              }}
+            >{t}</button>
+          ))}
+        </div>
         <input type="text" value={urlIn} onChange={(e) => setUrlIn(e.target.value)} placeholder="https://[wiki].fandom.com/wiki/Page" />
-        <input type="number" value={maxP} min={0} onChange={(e) => setMaxP(parseInt(e.target.value) || 0)} title="Max pages (0 = unlimited)" />
-        <span className="tlabel">max (0=∞)</span>
-        <input type="number" value={concurrency} min={1} max={8} onChange={(e) => setConcurrency(Math.max(1, Math.min(8, parseInt(e.target.value) || 1)))} title="Parallel fetches (1-8)" />
-        <span className="tlabel">parallel</span>
-        <label className="tlabel" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }} title="Save to Neon as you crawl">
-          <input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} />
-          autosave
-        </label>
-        <select
-          value={provider}
-          onChange={(e) => setProvider(e.target.value as LLMProvider)}
-          className="tbtn"
-          title="AI provider for summary/key-facts extraction (structure is always from MediaWiki)"
-          style={{ appearance: "auto" }}
-        >
-          <option value="none">AI: off (raw wiki)</option>
-          {availProviders.includes("claude") && (
-            <option value="claude">Claude · {providerDefaults.claude || "sonnet"}</option>
-          )}
-          {availProviders.includes("gemini") && (
-            <option value="gemini">Gemini · {providerDefaults.gemini || "3.1-pro"}</option>
-          )}
-        </select>
-        <button className="tbtn primary" disabled={crawling} onClick={startCrawl}>Crawl</button>
-        <button className="tbtn" disabled={crawling || !nodes.length} onClick={resumeCrawl} title="Continue crawling uncrawled links">Resume</button>
-        {crawling && <button className="tbtn danger" onClick={stopCrawl}>Stop</button>}
+
+        {/* Crawl-only controls */}
+        {tab === "crawl" && <>
+          <input type="number" value={maxP} min={0} onChange={(e) => setMaxP(parseInt(e.target.value) || 0)} title="Max pages (0 = unlimited)" />
+          <span className="tlabel">max (0=∞)</span>
+          <input type="number" value={concurrency} min={1} max={8} onChange={(e) => setConcurrency(Math.max(1, Math.min(8, parseInt(e.target.value) || 1)))} title="Parallel fetches (1-8)" />
+          <span className="tlabel">parallel</span>
+          <label className="tlabel" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer" }} title="Save to Neon as you crawl">
+            <input type="checkbox" checked={autosave} onChange={(e) => setAutosave(e.target.checked)} />
+            autosave
+          </label>
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as LLMProvider)}
+            className="tbtn"
+            title="AI provider for summary/key-facts extraction (structure is always from MediaWiki)"
+            style={{ appearance: "auto" }}
+          >
+            <option value="none">AI: off (raw wiki)</option>
+            {availProviders.includes("claude") && (
+              <option value="claude">Claude · {providerDefaults.claude || "sonnet"}</option>
+            )}
+            {availProviders.includes("gemini") && (
+              <option value="gemini">Gemini · {providerDefaults.gemini || "3.1-pro"}</option>
+            )}
+          </select>
+          <button className="tbtn primary" disabled={crawling} onClick={startCrawl}>Crawl</button>
+          <button className="tbtn" disabled={crawling || !nodes.length} onClick={resumeCrawl} title="Continue crawling uncrawled links">Resume</button>
+          {crawling && <button className="tbtn danger" onClick={stopCrawl}>Stop</button>}
+        </>}
+
         <div style={{ flex: 1 }} />
-        <button className={`tbtn${viewMode === "canon" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon" ? "network" : "canon")} title="Hypertext webmap of the wiki">
-          {viewMode === "canon" ? "Show Crawl" : "Webmap"}
-        </button>
-        <button className={`tbtn${viewMode === "canon-analysis" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon-analysis" ? "network" : "canon-analysis")} title="LLM explanation of how this IP organizes its canon">
-          {viewMode === "canon-analysis" ? "Show Crawl" : "Canon Logic"}
-        </button>
-        <button className={`tbtn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")} disabled={viewMode === "canon" || viewMode === "canon-analysis"}>
-          {viewMode === "network" ? "Show Tree" : "Show Network"}
-        </button>
-        <button className="tbtn" onClick={() => setAllExpanded((v) => !v)}>{allExpanded ? "Collapse All" : "Expand All"}</button>
-        <button className="tbtn" onClick={saveProject}>💾 Save</button>
-        <button className="tbtn" onClick={openProjects}>📁 Projects</button>
+
+        {/* Crawl-only right-side controls */}
+        {tab === "crawl" && <>
+          <button
+            className={`tbtn${viewMode === "tree" ? " active" : ""}`}
+            onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")}
+          >
+            {viewMode === "network" ? "Show Tree" : "Show Network"}
+          </button>
+          <button className="tbtn" onClick={() => setAllExpanded((v) => !v)}>{allExpanded ? "Collapse All" : "Expand All"}</button>
+          <button className="tbtn" onClick={saveProject}>💾 Save</button>
+          <button className="tbtn" onClick={openProjects}>📁 Projects</button>
+        </>}
       </div>
       <div id="progress" style={{ width: progressRef.current + "%" }} />
       <div id="main">
