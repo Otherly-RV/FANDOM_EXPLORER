@@ -50,24 +50,52 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [error, setError] = useState<string>("");
+  const [progress, setProgress] = useState<string[]>([]);
+  const [thinking, setThinking] = useState<string>("");
+  const [showThinking, setShowThinking] = useState<boolean>(true);
 
   const run = useCallback(async () => {
     if (!origin) return;
     setLoading(true);
     setError("");
     setAnalysis(null);
+    setProgress([]);
+    setThinking("");
     try {
       const opt = MODEL_OPTIONS.find((m) => m.id === modelId)!;
-      const r = await fetch("/api/canon/analyze", {
+      const r = await fetch("/api/canon/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ origin, provider: opt.provider, model: opt.id }),
       });
-      const text = await r.text();
-      let j: any = {};
-      try { j = text ? JSON.parse(text) : {}; } catch { j = { error: text.slice(0, 400) }; }
-      if (!r.ok) setError(j.error || `HTTP ${r.status}`);
-      else setAnalysis(j as Analysis);
+      if (!r.ok || !r.body) {
+        const t = await r.text();
+        throw new Error(`HTTP ${r.status}: ${t.slice(0, 400)}`);
+      }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const raw = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const ev = parseSSE(raw);
+          if (!ev) continue;
+          if (ev.event === "progress") {
+            setProgress((p) => [...p, String(ev.data?.step || "")]);
+          } else if (ev.event === "thinking") {
+            setThinking((t) => t + String(ev.data?.text || ""));
+          } else if (ev.event === "result") {
+            setAnalysis(ev.data as Analysis);
+          } else if (ev.event === "error") {
+            setError(String(ev.data?.error || "stream error"));
+          }
+        }
+      }
     } catch (e: any) {
       setError(e?.message || "failed");
     } finally {
@@ -142,10 +170,55 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
             organized — including per-item-type fields.
           </div>
         )}
-        {loading && (
-          <div className="tlabel">
-            Gathering siteinfo, nav tree, categories, and page fingerprints, then asking {modelId}… <br />
-            (30–60 s typical; can run up to 5 min for large wikis)
+
+        {/* Live progress + streaming thinking (visible while loading AND after) */}
+        {(loading || progress.length > 0 || thinking) && (
+          <div style={{ marginBottom: 12 }}>
+            {progress.length > 0 && (
+              <div style={{
+                background: "#f4f5f9", border: "1px solid #eceef4", borderRadius: 6,
+                padding: "6px 10px", marginBottom: 6, fontSize: 11,
+                fontFamily: "monospace", color: "#444",
+                maxHeight: 80, overflowY: "auto",
+              }}>
+                {progress.map((p, i) => (
+                  <div key={i}>
+                    <span style={{ color: "#5c54e8" }}>›</span> {p}
+                  </div>
+                ))}
+                {loading && <div style={{ color: "#888" }}>…</div>}
+              </div>
+            )}
+            {thinking && (
+              <div style={{ border: "1px solid #e5d6f7", borderRadius: 6, background: "#faf7ff" }}>
+                <div
+                  onClick={() => setShowThinking((v) => !v)}
+                  style={{
+                    cursor: "pointer", padding: "6px 10px", fontSize: 11,
+                    fontWeight: 700, color: "#7a4ad0", display: "flex",
+                    alignItems: "center", gap: 6, borderBottom: showThinking ? "1px solid #e5d6f7" : "none",
+                  }}
+                >
+                  <span style={{ fontSize: 9 }}>{showThinking ? "▼" : "▶"}</span>
+                  🧠 Model thinking {loading && <span className="spin" style={{ marginLeft: 4 }} />}
+                  <span style={{ marginLeft: "auto", color: "#a085cc", fontWeight: 400 }}>
+                    {thinking.length.toLocaleString()} chars
+                  </span>
+                </div>
+                {showThinking && (
+                  <pre
+                    ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}
+                    style={{
+                      margin: 0, padding: "8px 10px",
+                      maxHeight: 240, overflowY: "auto",
+                      fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace",
+                      color: "#4a3a6f", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      background: "transparent",
+                    }}
+                  >{thinking}</pre>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -522,4 +595,22 @@ function inline(s: string): string {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+// ---------------------------------------------------------------------------
+// SSE line parser (client-side) — matches server's `event:` + `data:` lines.
+// ---------------------------------------------------------------------------
+function parseSSE(raw: string): { event: string; data: any } | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) return null;
+  const raw2 = dataLines.join("\n");
+  try { return { event, data: JSON.parse(raw2) }; }
+  catch { return { event, data: raw2 }; }
 }
