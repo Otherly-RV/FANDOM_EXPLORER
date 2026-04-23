@@ -47,12 +47,12 @@ const DEFAULT_MODEL: Record<Provider, string> = {
   claude: "claude-sonnet-4-6",
 };
 
-// Tunables — keep conservative; pages fetch is the bottleneck.
+// Tunables — pages now carry full prose, so keep counts conservative.
 const TOP_CATEGORIES_TO_SCAN = 40;      // categories considered for grouping
-const MAX_PAGES_PER_CATEGORY = 40;      // per-group page cap
+const MAX_PAGES_PER_CATEGORY = 25;      // per-group page cap
 const MIN_MEMBERS_FOR_GROUP = 4;        // skip tiny categories
 const MIN_TEMPLATE_SHARE = 0.35;        // category counts as a "type" if this share of sampled pages share one infobox template
-const GLOBAL_PAGE_BUDGET = 900;         // hard cap across all groups
+const GLOBAL_PAGE_BUDGET = 300;         // hard cap across all groups
 const PAGE_CONCURRENCY = 6;
 const GROUP_CONCURRENCY = 3;
 
@@ -151,13 +151,13 @@ export async function POST(req: NextRequest) {
             sampled: slice.length,
           });
 
-          // Fetch wikitext for each, extract infobox template + fields.
+          // Fetch wikitext for each, extract infobox + prose sections.
           const detailed = await runPoolMap(
             slice,
             PAGE_CONCURRENCY,
             async (m) => {
               try {
-                return await fetchPageInfobox(origin, m.title);
+                return await fetchPageContent(origin, m.title);
               } catch {
                 return null;
               }
@@ -192,7 +192,7 @@ export async function POST(req: NextRequest) {
           });
 
           // Emit each page (verbatim).
-          const llmPages: { title: string; fieldKeys: string[] }[] = [];
+          const llmPages: { title: string; fieldKeys: string[]; sectionHeadings: string[] }[] = [];
           for (let i = 0; i < slice.length; i++) {
             const m = slice[i];
             const d = detailed[i];
@@ -201,11 +201,17 @@ export async function POST(req: NextRequest) {
               title: m.title,
               url: titleToUrl(origin, m.title),
               template: d?.template,
-              fields: d?.fields || [], // [[key,value], ...] verbatim
+              fields: d?.fields || [],          // [[key,value], ...] verbatim
+              lead: d?.lead || "",              // prose before first heading
+              sections: d?.sections || [],      // [{heading, level, text}, ...] verbatim
             };
             send("page", payload);
-            if (d?.fields?.length) {
-              llmPages.push({ title: m.title, fieldKeys: d.fields.map(([k]) => k) });
+            if (d) {
+              llmPages.push({
+                title: m.title,
+                fieldKeys: d.fields.map(([k]) => k),
+                sectionHeadings: d.sections.map((s) => s.heading),
+              });
             }
           }
 
@@ -293,12 +299,15 @@ async function siteInfoPlus(origin: string) {
   }
 }
 
-type PageInfobox = {
+type Section = { heading: string; level: number; text: string };
+type PageContent = {
   template?: string;
   fields: [string, string][]; // [key, value] VERBATIM from wikitext (lightly cleaned)
+  lead: string;               // leading prose before first section heading
+  sections: Section[];        // every == Heading == section, in order
 };
 
-async function fetchPageInfobox(origin: string, title: string): Promise<PageInfobox | null> {
+async function fetchPageContent(origin: string, title: string): Promise<PageContent | null> {
   const j = await mwGet<any>(origin, {
     action: "parse",
     page: title,
@@ -307,45 +316,83 @@ async function fetchPageInfobox(origin: string, title: string): Promise<PageInfo
   }).catch(() => null);
   if (!j?.parse) return null;
   const wikitext: string = j.parse.wikitext?.["*"] || j.parse.wikitext || "";
-  return extractInfobox(wikitext);
+  return extractPage(wikitext);
 }
 
-function extractInfobox(wikitext: string): PageInfobox {
-  if (!wikitext) return { fields: [] };
+function extractPage(wikitext: string): PageContent {
+  if (!wikitext) return { fields: [], lead: "", sections: [] };
+
+  // --- 1. Pull the infobox out so it doesn't pollute the prose. -----------
+  let template: string | undefined;
+  let fields: [string, string][] = [];
+  let stripped = wikitext;
+
   const startRe = /\{\{\s*([^|{}\n]*\binfobox\b[^|{}\n]*)/i;
   const startMatch = startRe.exec(wikitext);
-  if (!startMatch) return { fields: [] };
-  const template = startMatch[1].trim();
-
-  // Find matching closing }} with brace counting.
-  let i = startMatch.index;
-  let depth = 0;
-  let end = -1;
-  for (; i < wikitext.length; i++) {
-    if (wikitext[i] === "{" && wikitext[i + 1] === "{") { depth++; i++; }
-    else if (wikitext[i] === "}" && wikitext[i + 1] === "}") {
-      depth--; i++;
-      if (depth === 0) { end = i + 1; break; }
+  if (startMatch) {
+    template = startMatch[1].trim();
+    let i = startMatch.index;
+    let depth = 0;
+    let end = -1;
+    for (; i < wikitext.length; i++) {
+      if (wikitext[i] === "{" && wikitext[i + 1] === "{") { depth++; i++; }
+      else if (wikitext[i] === "}" && wikitext[i + 1] === "}") {
+        depth--; i++;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    if (end > 0) {
+      const body = wikitext.slice(startMatch.index, end);
+      const parts = splitTopLevelPipes(body).slice(1);
+      const seen = new Set<string>();
+      for (const p of parts) {
+        const eq = p.indexOf("=");
+        if (eq < 0) continue;
+        const k = p.slice(0, eq).trim();
+        if (!k || k.length > 40 || /[\n{}]/.test(k)) continue;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const v = cleanValue(p.slice(eq + 1));
+        fields.push([k, v]);
+        if (fields.length >= 60) break;
+      }
+      stripped = wikitext.slice(0, startMatch.index) + wikitext.slice(end);
     }
   }
-  if (end < 0) return { template, fields: [] };
 
-  const body = wikitext.slice(startMatch.index, end);
-  const parts = splitTopLevelPipes(body).slice(1); // drop template name
-  const fields: [string, string][] = [];
-  const seen = new Set<string>();
-  for (const p of parts) {
-    const eq = p.indexOf("=");
-    if (eq < 0) continue;
-    const k = p.slice(0, eq).trim();
-    if (!k || k.length > 40 || /[\n{}]/.test(k)) continue;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    const v = cleanValue(p.slice(eq + 1));
-    fields.push([k, v]);
-    if (fields.length >= 60) break;
+  // --- 2. Split remaining wikitext by == Headings == (levels 2-4). -------
+  // We keep the heading text + level + body text. Body is cleaned but NOT
+  // paraphrased — only wiki markup noise is removed.
+  const headingRe = /^(={2,4})\s*(.+?)\s*\1\s*$/gm;
+  const blocks: { heading: string; level: number; start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  // Pseudo-heading for the lead.
+  blocks.push({ heading: "__LEAD__", level: 0, start: 0, end: stripped.length });
+  while ((m = headingRe.exec(stripped))) {
+    // close previous block at this heading's start.
+    blocks[blocks.length - 1].end = m.index;
+    blocks.push({
+      heading: m[2].trim(),
+      level: m[1].length,
+      start: m.index + m[0].length,
+      end: stripped.length,
+    });
   }
-  return { template, fields };
+
+  let lead = "";
+  const sections: Section[] = [];
+  const SKIP_HEADINGS = /^(references|external links?|see also|gallery|notes|appearances?|navigation|sources?)$/i;
+  for (const b of blocks) {
+    const raw = stripped.slice(b.start, b.end);
+    const text = cleanProse(raw);
+    if (!text) continue;
+    if (b.heading === "__LEAD__") { lead = text; continue; }
+    if (SKIP_HEADINGS.test(b.heading)) continue;
+    sections.push({ heading: b.heading, level: b.level, text });
+    if (sections.length >= 40) break;
+  }
+
+  return { template, fields, lead, sections };
 }
 
 function splitTopLevelPipes(s: string): string[] {
@@ -391,6 +438,109 @@ function cleanValue(raw: string): string {
   s = s.replace(/\s+/g, " ").trim();
   if (s.length > 400) s = s.slice(0, 400) + "…";
   return s;
+}
+
+// Clean prose: strip wiki/HTML markup but KEEP every sentence verbatim.
+// No paraphrasing. Preserves line breaks and list bullets.
+function cleanProse(raw: string): string {
+  let s = raw;
+  // Strip comments + refs.
+  s = s.replace(/<!--[\s\S]*?-->/g, "");
+  s = s.replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "");
+  s = s.replace(/<ref[^>]*\/\s*>/gi, "");
+  // Drop entire {{...}} templates that aren't content (quote/cite templates
+  // are kept as their last positional arg).
+  s = stripTemplates(s);
+  // Tables: drop {| ... |} blocks entirely (too noisy to render verbatim).
+  s = s.replace(/\{\|[\s\S]*?\|\}/g, "");
+  // Files/images: [[File:...]] and [[Image:...]] -> drop.
+  s = s.replace(/\[\[(?:File|Image):[^\]]*(?:\[\[[^\]]*\]\][^\]]*)*\]\]/gi, "");
+  // Category links -> drop.
+  s = s.replace(/\[\[Category:[^\]]+\]\]/gi, "");
+  // Pipe-links -> label, bare links -> target.
+  s = s.replace(/\[\[([^\]\|]+)\|([^\]]+)\]\]/g, "$2");
+  s = s.replace(/\[\[([^\]]+)\]\]/g, "$1");
+  // External links [url label] -> label.
+  s = s.replace(/\[https?:\/\/\S+\s+([^\]]+)\]/g, "$1");
+  s = s.replace(/\[https?:\/\/\S+\]/g, "");
+  // Bold/italic markers -> drop markers, keep text.
+  s = s.replace(/'{2,5}/g, "");
+  // <br> -> newline.
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  // Remaining HTML tags -> strip.
+  s = s.replace(/<\/?[a-z][^>]*>/gi, "");
+  // Collapse excessive blank lines; trim each line.
+  const lines = s.split(/\r?\n/).map((l) => l.replace(/[ \t]+/g, " ").trim());
+  // Remove stray leading/trailing empties, collapse runs of blanks.
+  const out: string[] = [];
+  let blank = 0;
+  for (const l of lines) {
+    if (!l) { blank++; if (blank <= 1 && out.length) out.push(""); continue; }
+    blank = 0;
+    out.push(l);
+  }
+  while (out.length && !out[out.length - 1]) out.pop();
+  let result = out.join("\n");
+  // Cap per section so payload stays sane, but keep a lot of content.
+  if (result.length > 8000) result = result.slice(0, 8000) + "…";
+  return result;
+}
+
+// Strip {{...}} templates recursively. For simple single-line templates with
+// named args, drop them entirely. For templates like {{quote|X|Y}} or
+// {{cite|...}} we keep the last non-named positional arg as text.
+function stripTemplates(s: string): string {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "{" && s[i + 1] === "{") {
+      // Find balanced close.
+      let depth = 1;
+      let j = i + 2;
+      while (j < s.length && depth > 0) {
+        if (s[j] === "{" && s[j + 1] === "{") { depth++; j += 2; }
+        else if (s[j] === "}" && s[j + 1] === "}") { depth--; j += 2; }
+        else j++;
+      }
+      if (depth !== 0) { out += s[i]; i++; continue; }
+      const inner = s.slice(i + 2, j - 2);
+      // Recursively clean inner first.
+      const cleanedInner = stripTemplates(inner);
+      const parts = splitTopLevelPipesFlat(cleanedInner);
+      const name = (parts[0] || "").trim().toLowerCase();
+      // Keep useful content templates.
+      if (/^(quote|cquote|bquote|blockquote)\b/.test(name)) {
+        const positional = parts.slice(1).filter((p) => !/^[\w\- ]+=/.test(p));
+        out += positional[0] ? positional[0].trim() : "";
+      } else {
+        // Drop everything else.
+      }
+      i = j;
+      continue;
+    }
+    out += s[i];
+    i++;
+  }
+  return out;
+}
+
+// Like splitTopLevelPipes but works on already-unwrapped template body
+// (no surrounding {{ }}).
+function splitTopLevelPipesFlat(s: string): string[] {
+  const out: string[] = [];
+  let buf = "";
+  let link = 0, tmpl = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i], c2 = s[i + 1];
+    if (c === "[" && c2 === "[") { link++; buf += "[["; i++; continue; }
+    if (c === "]" && c2 === "]") { link--; buf += "]]"; i++; continue; }
+    if (c === "{" && c2 === "{") { tmpl++; buf += "{{"; i++; continue; }
+    if (c === "}" && c2 === "}") { tmpl--; buf += "}}"; i++; continue; }
+    if (c === "|" && link === 0 && tmpl === 0) { out.push(buf); buf = ""; continue; }
+    buf += c;
+  }
+  if (buf) out.push(buf);
+  return out;
 }
 
 function isAdminCategory(name: string): boolean {
@@ -449,7 +599,7 @@ type InventoryForLLM = {
     sampled: number;
     total: number;
     isType: boolean;
-    pages: { title: string; fieldKeys: string[] }[]; // no values
+    pages: { title: string; fieldKeys: string[]; sectionHeadings: string[] }[]; // no values, no prose
   }[];
 };
 
@@ -478,14 +628,23 @@ function buildUserMessage(site: { sitename: string; origin: string; articles: nu
   const otherGroups = inv.groups.filter((g) => !g.isType);
   const typeBlock = typeGroups.map((g) => {
     const keys = new Map<string, number>();
-    for (const p of g.pages) for (const k of p.fieldKeys) keys.set(k, (keys.get(k) || 0) + 1);
+    const heads = new Map<string, number>();
+    for (const p of g.pages) {
+      for (const k of p.fieldKeys) keys.set(k, (keys.get(k) || 0) + 1);
+      for (const h of p.sectionHeadings) heads.set(h, (heads.get(h) || 0) + 1);
+    }
     const topKeys = [...keys.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 25)
       .map(([k, n]) => `${k}(${n})`)
       .join(", ");
+    const topHeads = [...heads.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([h, n]) => `${h}(${n})`)
+      .join(", ");
     const examples = g.pages.slice(0, 5).map((p) => p.title).join(" | ");
-    return `- "${g.category}" — template: ${g.template || "(none)"} — sampled ${g.sampled}/${g.total}\n    field keys: ${topKeys}\n    examples: ${examples}`;
+    return `- "${g.category}" — template: ${g.template || "(none)"} — sampled ${g.sampled}/${g.total}\n    field keys: ${topKeys}\n    section headings: ${topHeads}\n    examples: ${examples}`;
   }).join("\n");
   const otherBlock = otherGroups
     .slice(0, 30)

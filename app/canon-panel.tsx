@@ -17,12 +17,16 @@ type Provider = "gemini" | "claude";
 
 type FieldPair = [string, string];
 
+type Section = { heading: string; level: number; text: string };
+
 type PageRow = {
   gid: number;
   title: string;
   url: string;
   template?: string;
   fields: FieldPair[];
+  lead: string;
+  sections: Section[];
 };
 
 type Group = {
@@ -150,6 +154,8 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
                 url: ev.data.url,
                 template: ev.data.template,
                 fields: ev.data.fields || [],
+                lead: ev.data.lead || "",
+                sections: ev.data.sections || [],
               };
               upsertGroup((prev) =>
                 prev.map((g) => (g.gid === p.gid ? { ...g, pages: [...g.pages, p] } : g))
@@ -413,20 +419,23 @@ function GroupBlock({ g }: { g: Group }) {
 function PageRow({ p }: { p: PageRow }) {
   const [open, setOpen] = useState<boolean>(false);
   const hasFields = p.fields.length > 0;
+  const hasLead = !!p.lead.trim();
+  const hasSections = p.sections.length > 0;
+  const expandable = hasFields || hasLead || hasSections;
   return (
     <div style={{ borderTop: "1px solid #f1f3fa" }}>
       <div
-        onClick={() => hasFields && setOpen((v) => !v)}
+        onClick={() => expandable && setOpen((v) => !v)}
         style={{
           padding: "4px 12px 4px 24px",
           display: "flex",
           alignItems: "center",
           gap: 8,
-          cursor: hasFields ? "pointer" : "default",
+          cursor: expandable ? "pointer" : "default",
         }}
       >
-        <span style={{ fontSize: 9, color: hasFields ? "#5c54e8" : "#ccc", width: 10 }}>
-          {hasFields ? (open ? "▼" : "▶") : "·"}
+        <span style={{ fontSize: 9, color: expandable ? "#5c54e8" : "#ccc", width: 10 }}>
+          {expandable ? (open ? "▼" : "▶") : "·"}
         </span>
         <a
           href={p.url}
@@ -439,17 +448,43 @@ function PageRow({ p }: { p: PageRow }) {
         </a>
         <span style={{ fontSize: 10, color: "#888" }}>
           {hasFields ? `${p.fields.length} fields` : "no infobox"}
+          {hasSections ? ` · ${p.sections.length} sections` : ""}
         </span>
       </div>
-      {open && hasFields && (
-        <div style={{
-          padding: "4px 12px 10px 36px",
-          display: "grid",
-          gridTemplateColumns: "minmax(120px, max-content) 1fr",
-          gap: "2px 10px",
-        }}>
-          {p.fields.map(([k, v], i) => (
-            <FieldRow key={`${i}-${k}`} k={k} v={v} />
+      {open && expandable && (
+        <div style={{ padding: "4px 12px 10px 36px" }}>
+          {hasFields && (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(120px, max-content) 1fr",
+              gap: "2px 10px",
+              marginBottom: 10,
+            }}>
+              {p.fields.map(([k, v], i) => (
+                <FieldRow key={`${i}-${k}`} k={k} v={v} />
+              ))}
+            </div>
+          )}
+          {hasLead && (
+            <div style={{
+              fontSize: 12, color: "#2a2a3f", whiteSpace: "pre-wrap",
+              lineHeight: 1.5, marginBottom: 10, borderLeft: "2px solid #eceef4",
+              paddingLeft: 8,
+            }}>{p.lead}</div>
+          )}
+          {hasSections && p.sections.map((s, i) => (
+            <div key={i} style={{ marginTop: 8 }}>
+              <div style={{
+                fontSize: 12, fontWeight: 700, color: "#5c54e8",
+                marginBottom: 3,
+                paddingLeft: (s.level - 2) * 10,
+              }}>{s.heading}</div>
+              <div style={{
+                fontSize: 12, color: "#2a2a3f", whiteSpace: "pre-wrap",
+                lineHeight: 1.5, paddingLeft: (s.level - 2) * 10 + 4,
+                borderLeft: "2px solid #eceef4", marginLeft: (s.level - 2) * 10,
+              }}>{s.text}</div>
+            </div>
           ))}
         </div>
       )}
@@ -569,10 +604,23 @@ function groupToMarkdown(g: Group): string {
   const lines: string[] = [];
   lines.push(`### ${g.category}${g.template ? ` — \`${g.template}\`` : ""} (${g.pages.length}/${g.totalMembers})`);
   for (const p of g.pages) {
-    lines.push(`- [${p.title}](${p.url})`);
-    for (const [k, v] of p.fields) {
-      lines.push(`    - **${k}:** ${v || "_(empty)_"}`);
+    lines.push(`#### [${p.title}](${p.url})`);
+    if (p.fields.length) {
+      for (const [k, v] of p.fields) {
+        lines.push(`- **${k}:** ${v || "_(empty)_"}`);
+      }
     }
+    if (p.lead.trim()) {
+      lines.push("");
+      lines.push(p.lead);
+    }
+    for (const s of p.sections) {
+      const prefix = "#".repeat(Math.min(Math.max(s.level + 2, 3), 6));
+      lines.push("");
+      lines.push(`${prefix} ${s.heading}`);
+      lines.push(s.text);
+    }
+    lines.push("");
   }
   lines.push("");
   return lines.join("\n");
@@ -589,9 +637,14 @@ function downloadHtml(groups: Group[], explanation: string, meta: Meta | null, o
       const fields = p.fields.length
         ? "<dl>" + p.fields.map(([k, v]) => `<dt>${escHtml(k)}</dt><dd>${escHtml(v || "")}</dd>`).join("") + "</dl>"
         : "";
-      return `<li><a href="${escHtml(p.url)}">${escHtml(p.title)}</a>${fields}</li>`;
+      const lead = p.lead.trim() ? `<p>${escHtml(p.lead).replace(/\n/g, "<br>")}</p>` : "";
+      const sections = p.sections.map((s) => {
+        const lvl = Math.min(Math.max(s.level + 1, 4), 6);
+        return `<h${lvl}>${escHtml(s.heading)}</h${lvl}><p>${escHtml(s.text).replace(/\n/g, "<br>")}</p>`;
+      }).join("");
+      return `<article><h4><a href="${escHtml(p.url)}">${escHtml(p.title)}</a></h4>${fields}${lead}${sections}</article>`;
     }).join("");
-    return `<section><h3>${escHtml(g.category)}${g.template ? ` <code>${escHtml(g.template)}</code>` : ""} <span class="count">(${g.pages.length}/${g.totalMembers})</span></h3><ul class="pages">${pages}</ul></section>`;
+    return `<section><h3>${escHtml(g.category)}${g.template ? ` <code>${escHtml(g.template)}</code>` : ""} <span class="count">(${g.pages.length}/${g.totalMembers})</span></h3>${pages}</section>`;
   };
 
   const html = `<!doctype html>
@@ -602,12 +655,17 @@ function downloadHtml(groups: Group[], explanation: string, meta: Meta | null, o
   h1 { font-size: 26px; margin-bottom: 2px; }
   h2 { font-size: 20px; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-top: 32px; }
   h3 { font-size: 16px; margin-top: 22px; }
+  h4 { font-size: 14px; margin-top: 16px; margin-bottom: 4px; }
+  h5 { font-size: 13px; color:#5c54e8; margin: 10px 0 2px; }
+  h6 { font-size: 12px; color:#5c54e8; margin: 8px 0 2px; }
   .meta { color:#666; font-size: 12px; margin-bottom: 20px; }
   .count { color: #888; font-weight: 400; font-size: 12px; }
   code { background:#f4f5f9; padding:1px 4px; border-radius:3px; font-size:.9em; color:#5c54e8; }
+  article { margin: 10px 0 18px; padding-left: 10px; border-left: 2px solid #eceef4; }
+  article p { margin: 6px 0; }
   ul.pages { padding-left: 22px; }
   ul.pages > li { margin: 6px 0; }
-  dl { margin: 4px 0 8px 18px; display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; font-size: 12px; }
+  dl { margin: 4px 0 8px 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; font-size: 12px; }
   dt { color: #5c54e8; font-family: monospace; }
   dd { margin: 0; color: #2a2a3f; white-space: pre-wrap; word-break: break-word; }
 </style></head><body>
