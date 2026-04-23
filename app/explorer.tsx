@@ -133,7 +133,7 @@ export default function Explorer() {
     ctx.clearRect(0, 0, cv.width, cv.height);
     const ns = Object.values(nodesRef.current);
     if (!ns.length) {
-      ctx.fillStyle = "#1e2235"; ctx.font = "12px system-ui"; ctx.textAlign = "center";
+      ctx.fillStyle = "#c0c4d0"; ctx.font = "12px system-ui"; ctx.textAlign = "center";
       ctx.fillText("Enter a Fandom URL and Crawl", cv.width / 2, cv.height / 2);
       return;
     }
@@ -141,7 +141,7 @@ export default function Explorer() {
       const a = nodesRef.current[e.src], b = nodesRef.current[e.dst]; if (!a || !b) return;
       const [ax, ay] = w2s(a.x, a.y), [bx, by] = w2s(b.x, b.y);
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
-      ctx.strokeStyle = "rgba(80,90,150,0.3)"; ctx.lineWidth = 1; ctx.stroke();
+      ctx.strokeStyle = "rgba(80,90,150,0.25)"; ctx.lineWidth = 1; ctx.stroke();
     });
     ns.forEach((n) => {
       const [sx, sy] = w2s(n.x, n.y), r = rad(n.depth) * camRef.current.z, c = col(n.depth);
@@ -150,8 +150,8 @@ export default function Explorer() {
         ctx.beginPath(); ctx.arc(sx, sy, r + 4, 0, Math.PI * 2); ctx.fillStyle = c + "44"; ctx.fill();
       }
       ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fillStyle = n.error ? "#2a1500" : n.loading ? "#1a1d2e" : c; ctx.fill();
-      ctx.strokeStyle = "rgba(255,255,255,.1)"; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = n.error ? "#fbeee2" : n.loading ? "#eceef4" : c; ctx.fill();
+      ctx.strokeStyle = "rgba(20,22,35,.15)"; ctx.lineWidth = 1; ctx.stroke();
       if (n.loading) {
         const t = Date.now() / 500;
         ctx.beginPath(); ctx.arc(sx, sy, r, t, t + Math.PI * 1.3);
@@ -161,7 +161,7 @@ export default function Explorer() {
         const fs = Math.max(9, Math.min(11, 10 * camRef.current.z));
         ctx.font = `${fs}px system-ui`; ctx.textAlign = "center";
         const lbl = n.title.length > 24 ? n.title.slice(0, 22) + "…" : n.title;
-        ctx.fillStyle = n.url === selUrlRef.current ? "#fff" : "rgba(170,170,210,.75)";
+        ctx.fillStyle = n.url === selUrlRef.current ? "#1a1a2a" : "rgba(60,60,90,.75)";
         ctx.fillText(lbl, sx, sy + r + fs + 2);
       }
     });
