@@ -21,6 +21,11 @@ type Bucket = {
   topCategories: { name: string; pageCount: number; samplePages: string[] }[];
 };
 
+// Categories that are wiki housekeeping, not subject-matter structure.
+// Skipped entirely from the overview (still visible in the raw DAG below).
+const MAINTENANCE_RE =
+  /\b(stubs?|articles?\s+(?:needing|requiring|in\s+need\s+of|with|missing|containing|to\s+be)|incomplete|cleanup|disambiguations?|redirects?|templates?|blog\s*posts?|galleries|gallery(?:\s+subpages)?|subpages?|candidates?\s+for\s+deletion|speedy\s+deletion|pages\s+with|hidden(?:\s+categories)?|tracking\s+categories?|broken\s+links?|missing\s+images?|administration|administrators?|moderators?|bots?|user(?:names?|boxes?|pages?)?|sandboxes?|unused|orphaned|protected\s+pages?|watercooler|file\s+redirects?|expanded\s+cargo|validation|maintenance)\b/i;
+
 // Order matters: first matching rule wins, so more-specific patterns must
 // come before broad ones (e.g. "Characters by species" should match
 // characters, not species).
@@ -35,7 +40,7 @@ const RULES: { id: string; label: string; re: RegExp }[] = [
   {
     id: "characters",
     label: "Characters & people",
-    re: /\b(character|people|persons?|individuals?|protagonist|antagonist|heroes?|villains?|cast|crew|members?|residents?|citizens?|inhabitants?|npcs?|bosses?)\b/i,
+    re: /\b(character|people|persons?|individuals?|protagonist|antagonist|heroes?|villains?|cast|crew|members?|residents?|citizens?|inhabitants?|npcs?|bosses?|fighters?|combatants?|real[-\s]?life\s+people)\b/i,
   },
   {
     id: "species",
@@ -50,36 +55,37 @@ const RULES: { id: string; label: string; re: RegExp }[] = [
   {
     id: "locations",
     label: "Locations & worlds",
-    re: /\b(locations?|places?|planets?|worlds?|regions?|countries|cities|towns?|villages?|realms?|galax(?:y|ies)|systems?|continents?|kingdoms?|territor(?:y|ies)|zones?|areas?|maps?|settings?|environments?|dungeons?|biomes?|geograph(?:y|ies)|stars?)\b/i,
+    re: /\b(locations?|places?|planets?|worlds?|regions?|countries|cities|towns?|villages?|realms?|galax(?:y|ies)|systems?|continents?|kingdoms?|territor(?:y|ies)|zones?|areas?|maps?|settings?|environments?|dungeons?|biomes?|geograph(?:y|ies)|stars?|stages?|arenas?|levels?)\b/i,
   },
   {
     id: "events",
     label: "Story, events & timeline",
-    re: /\b(events?|battles?|wars?|conflicts?|timelines?|eras?|periods?|histor(?:y|ies)|dates?|years?|centuries|decades|episodes?|seasons?|arcs?|chapters?|quests?|missions?|storylines?|plots?|campaigns?|crusades?)\b/i,
+    re: /\b(events?|battles?|wars?|conflicts?|timelines?|eras?|periods?|histor(?:y|ies)|dates?|years?|centuries|decades|episodes?|seasons?|arcs?|chapters?|quests?|missions?|storylines?|plots?|campaigns?|crusades?|tournaments?)\b/i,
   },
   {
     id: "media",
     label: "Media & works",
-    re: /\b(films?|movies?|books?|novels?|novellas?|comics?|manga|games?|video ?games?|series|franchises?|media|works?|publications?|issues?|volumes?|magazines?|soundtracks?|albums?|songs?|music|shows?|anime|audios?|podcasts?|merchandise)\b/i,
+    re: /\b(films?|movies?|books?|novels?|novellas?|comics?|manga|games?|video ?games?|series|franchises?|media|works?|publications?|issues?|volumes?|magazines?|soundtracks?|albums?|songs?|music|shows?|anime|audios?|podcasts?|merchandise|animations?|toys?|crossovers?)\b/i,
+  },
+  {
+    id: "gameplay",
+    label: "Gameplay & mechanics",
+    re: /\b(attacks?|moves?|movements?|techniques?|combos?|super\s+(?:combos?|arts?)|super\s+arts?|special\s+moves?|ex[-\s]?able|overdrive|overheads?|anti[-\s]?air|projectiles?|grabs?|throws?|kicks?|punches?|punching|kicking|taunts?|game\s+modes?|mechanics?|gameplay|cosmetics?|costumes?|skins?|outfits?|move\s+lists?|abilities|skills?|powers?|spells?|status\s+effects?|buffs?|debuffs?|armou?r\s+break|unblockable|charge\s+attacks?|command\s+grabs?|stances?|counters?)\b/i,
   },
   {
     id: "objects",
     label: "Objects & technology",
-    re: /\b(weapons?|items?|objects?|artifacts?|vehicles?|ships?|starships?|spacecraft|mecha|technolog(?:y|ies)|equipments?|gear|armou?r|tools?|devices?|machines?|buildings?|structures?|architectures?|relics?|treasures?)\b/i,
+    re: /\b(weapons?|items?|objects?|artifacts?|vehicles?|ships?|starships?|spacecraft|mecha|technolog(?:y|ies)|equipments?|gear|tools?|devices?|machines?|buildings?|structures?|architectures?|relics?|treasures?)\b/i,
   },
   {
     id: "concepts",
     label: "Concepts & lore",
-    re: /\b(concepts?|lore|religions?|mytholog(?:y|ies)|magic|powers?|abilities|spells?|skills?|sciences?|terms?|terminolog(?:y|ies)|philosoph(?:y|ies)|languages?|cultures?|traditions?|customs?|laws?|rituals?|theor(?:y|ies))\b/i,
-  },
-  {
-    id: "meta",
-    label: "Wiki & community",
-    re: /\b(wikis?|policies|policy|templates?|users?|admins?|administrators?|help|community|maintenance|stubs?|disambiguations?|redirects?|drafts?|sandboxes?|categories|navigation|portals?|projects?|galleries)\b/i,
+    re: /\b(concepts?|lore|religions?|mytholog(?:y|ies)|magic|terms?|terminolog(?:y|ies)|philosoph(?:y|ies)|languages?|cultures?|traditions?|customs?|laws?|rituals?|theor(?:y|ies))\b/i,
   },
 ];
 
-function classify(name: string): { id: string; label: string } {
+function classify(name: string): { id: string; label: string } | null {
+  if (MAINTENANCE_RE.test(name)) return null;
   for (const r of RULES) if (r.re.test(name)) return { id: r.id, label: r.label };
   return { id: "other", label: "Other" };
 }
@@ -151,15 +157,21 @@ async function handle(req: NextRequest) {
 
   // Bucketize.
   type CatAgg = { name: string; pageCount: number; bucket: string; label: string };
-  const cats: CatAgg[] = catRows.map((r: any) => {
+  const cats: CatAgg[] = [];
+  let skippedMaintenance = 0;
+  for (const r of catRows) {
     const c = classify(String(r.name));
-    return {
+    if (!c) {
+      skippedMaintenance++;
+      continue;
+    }
+    cats.push({
       name: String(r.name),
       pageCount: Number(r.page_count) || 0,
       bucket: c.id,
       label: c.label,
-    };
-  });
+    });
+  }
 
   // For the top categories per bucket, pull a few sample page titles. We do
   // one query per bucket's top categories batched together.
@@ -226,9 +238,9 @@ async function handle(req: NextRequest) {
     "locations",
     "events",
     "media",
+    "gameplay",
     "objects",
     "concepts",
-    "meta",
     "other",
   ];
   const bucketList = Array.from(buckets.values()).sort((a, b) => {
@@ -248,5 +260,6 @@ async function handle(req: NextRequest) {
     totals,
     buckets: bucketList,
     scannedCategories: cats.length,
+    skippedMaintenance,
   });
 }

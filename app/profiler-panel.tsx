@@ -475,8 +475,16 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
       {/* Profile output */}
       {profile && (
         <>
-          {/* Organized overview — the "how is this wiki built" answer */}
-          <Section title="How this wiki is organized">
+          {/* Interactive hypertext webmap */}
+          <Section title="Webmap (follow the actual hypertext)">
+            <WebmapView
+              origin={origin}
+              startTitle={profile.mainpage || "Main Page"}
+            />
+          </Section>
+
+          {/* Semantic overview of categories (secondary, collapsible) */}
+          <Section title="Category overview (by page count)">
             {overviewLoading && !overview && (
               <div className="tlabel">Building overview…</div>
             )}
@@ -783,6 +791,7 @@ const BUCKET_COLORS: Record<string, string> = {
   locations: "#2d8f50",
   events: "#e07a38",
   media: "#c9a227",
+  gameplay: "#e0485a",
   objects: "#6a6aa0",
   concepts: "#8a7a5a",
   meta: "#999",
@@ -970,6 +979,219 @@ function BucketCard({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Webmap: a real, interactive hypertext tree. Starts from the Main Page,
+// lazily fetches each node's outbound wiki-links via /api/profile/links and
+// lets the user walk the ACTUAL link graph of the wiki (not categories).
+// ---------------------------------------------------------------------------
+
+type WebmapLinks = { title: string; sections: Record<string, string[]> };
+
+function WebmapView({
+  origin,
+  startTitle,
+}: {
+  origin: string;
+  startTitle: string;
+}) {
+  const [root, setRoot] = useState<string>(startTitle);
+  const [input, setInput] = useState<string>(startTitle);
+
+  useEffect(() => {
+    setRoot(startTitle);
+    setInput(startTitle);
+  }, [startTitle]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && input.trim()) setRoot(input.trim());
+          }}
+          placeholder="Any page title on this wiki"
+          style={{
+            flex: 1,
+            fontSize: 12,
+            padding: "4px 8px",
+            border: "1px solid #d4d7e0",
+            borderRadius: 6,
+          }}
+        />
+        <button
+          className="tbtn primary"
+          onClick={() => input.trim() && setRoot(input.trim())}
+        >
+          Go
+        </button>
+        <button
+          className="tbtn"
+          onClick={() => {
+            setInput(startTitle);
+            setRoot(startTitle);
+          }}
+          title="Back to Main Page"
+        >
+          Home
+        </button>
+      </div>
+      <div className="tlabel" style={{ marginBottom: 6 }}>
+        Click a link to walk the hypertext. Each node fetches its own outbound
+        links on demand.
+      </div>
+      <WebmapNode key={root} origin={origin} title={root} level={0} defaultOpen />
+    </div>
+  );
+}
+
+function WebmapNode({
+  origin,
+  title,
+  level,
+  defaultOpen = false,
+}: {
+  origin: string;
+  title: string;
+  level: number;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [data, setData] = useState<WebmapLinks | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>("");
+  const loadedRef = useRef(false);
+
+  const load = useCallback(async () => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+    setLoading(true);
+    setError("");
+    try {
+      const r = await fetch(
+        `/api/profile/links?origin=${encodeURIComponent(
+          origin
+        )}&title=${encodeURIComponent(title)}&limit=80`
+      );
+      const j = await safeJson(r);
+      if (!r.ok) {
+        setError(j.error || `HTTP ${r.status}`);
+      } else {
+        setData({ title: j.title, sections: j.sections || {} });
+      }
+    } catch (e: any) {
+      setError(e?.message || "failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [origin, title]);
+
+  useEffect(() => {
+    if (open && !loadedRef.current) load();
+  }, [open, load]);
+
+  const sectionKeys = data ? Object.keys(data.sections) : [];
+  const totalLinks = data
+    ? sectionKeys.reduce((n, k) => n + data.sections[k].length, 0)
+    : 0;
+
+  return (
+    <div style={{ marginLeft: level === 0 ? 0 : 14 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "2px 0",
+        }}
+      >
+        <span
+          onClick={() => setOpen((v) => !v)}
+          style={{
+            cursor: "pointer",
+            fontSize: 10,
+            color: "#5c54e8",
+            width: 12,
+            userSelect: "none",
+          }}
+          title={open ? "Collapse" : "Expand"}
+        >
+          {open ? "▼" : "▶"}
+        </span>
+        <a
+          href={`${origin}/wiki/${encodeURIComponent(
+            title.replace(/ /g, "_")
+          )}`}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            fontSize: 12,
+            color: level === 0 ? "#2a2a3f" : "#3a3a55",
+            fontWeight: level === 0 ? 600 : 400,
+            textDecoration: "none",
+          }}
+        >
+          {title}
+        </a>
+        {loading && <span className="tlabel">loading…</span>}
+        {data && (
+          <span className="tlabel">
+            · {totalLinks} links{sectionKeys.length > 1 ? ` · ${sectionKeys.length} sections` : ""}
+          </span>
+        )}
+        {error && (
+          <span className="tlabel" style={{ color: "#a04a18" }}>
+            · {error}
+          </span>
+        )}
+      </div>
+      {open && data && (
+        <div
+          style={{
+            borderLeft: "1px solid #eceef4",
+            marginLeft: 6,
+            paddingLeft: 4,
+          }}
+        >
+          {sectionKeys.length === 0 && (
+            <div className="tlabel" style={{ marginLeft: 14 }}>
+              No outbound links.
+            </div>
+          )}
+          {sectionKeys.map((s) => (
+            <div key={s} style={{ marginTop: s ? 6 : 0 }}>
+              {s && (
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#5c54e8",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: ".05em",
+                    marginLeft: 14,
+                    marginBottom: 2,
+                  }}
+                >
+                  {s}
+                </div>
+              )}
+              {data.sections[s].map((t) => (
+                <WebmapNode
+                  key={`${s}::${t}`}
+                  origin={origin}
+                  title={t}
+                  level={level + 1}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
