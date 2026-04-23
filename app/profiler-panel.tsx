@@ -191,12 +191,13 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Webmap: interactive hypertext tree. Starts from the Main Page, lazily
-// fetches each node's outbound wiki-links via /api/profile/links and lets the
-// user walk the actual link graph of the wiki.
+// Webmap: the wiki's real navigation tree, straight from
+// MediaWiki:Wiki-navigation — the menu editors curate for the top navbar.
+// Each link can also be expanded to see its own outbound mainspace links.
 // ---------------------------------------------------------------------------
 
 type WebmapLinks = { title: string; sections: Record<string, string[]> };
+type NavNode = { label: string; target?: string; children: NavNode[] };
 
 function WebmapView({
   origin,
@@ -205,54 +206,202 @@ function WebmapView({
   origin: string;
   startTitle: string;
 }) {
-  const [root, setRoot] = useState<string>(startTitle);
-  const [input, setInput] = useState<string>(startTitle);
+  const [nav, setNav] = useState<NavNode[] | null>(null);
+  const [navLoading, setNavLoading] = useState(false);
+  const [navError, setNavError] = useState<string>("");
+  const [found, setFound] = useState<boolean>(true);
+
+  const loadNav = useCallback(async () => {
+    if (!origin) return;
+    setNavLoading(true);
+    setNavError("");
+    try {
+      const r = await fetch(
+        `/api/profile/nav?origin=${encodeURIComponent(origin)}`
+      );
+      const j = await safeJson(r);
+      if (!r.ok) {
+        setNavError(j.error || `HTTP ${r.status}`);
+      } else {
+        setNav(j.tree || []);
+        setFound(!!j.found);
+      }
+    } catch (e: any) {
+      setNavError(e?.message || "failed");
+    } finally {
+      setNavLoading(false);
+    }
+  }, [origin]);
 
   useEffect(() => {
-    setRoot(startTitle);
-    setInput(startTitle);
-  }, [startTitle]);
+    loadNav();
+  }, [loadNav]);
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && input.trim()) setRoot(input.trim());
-          }}
-          placeholder="Any page title on this wiki"
-          style={{
-            flex: 1,
-            fontSize: 12,
-            padding: "4px 8px",
-            border: "1px solid #d4d7e0",
-            borderRadius: 6,
-          }}
-        />
-        <button
-          className="tbtn primary"
-          onClick={() => input.trim() && setRoot(input.trim())}
-        >
-          Go
-        </button>
-        <button
-          className="tbtn"
-          onClick={() => {
-            setInput(startTitle);
-            setRoot(startTitle);
-          }}
-          title="Back to Main Page"
-        >
-          Home
-        </button>
-      </div>
       <div className="tlabel" style={{ marginBottom: 6 }}>
-        Click ▶ to expand a page and see its outbound links. Links are grouped
-        by the section heading they appear under.
+        Source: <code>MediaWiki:Wiki-navigation</code> — the curated top-navbar
+        menu. Click ▶ on any link to see that page's outbound links too.
       </div>
-      <WebmapNode key={root} origin={origin} title={root} level={0} defaultOpen />
+
+      {navLoading && !nav && <div className="tlabel">Loading nav…</div>}
+      {navError && (
+        <div className="tlabel" style={{ color: "#a04a18" }}>
+          {navError}
+        </div>
+      )}
+      {nav && !found && (
+        <div className="tlabel">
+          This wiki has no <code>MediaWiki:Wiki-navigation</code> page. Falling
+          back to the Main Page below.
+        </div>
+      )}
+      {nav && nav.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          {nav.map((n, i) => (
+            <NavNodeView key={i} node={n} origin={origin} level={0} />
+          ))}
+        </div>
+      )}
+
+      {/* Always expose the Main Page as a second root so you can walk into
+          the body content even when the nav menu is the primary entry. */}
+      <div
+        style={{
+          borderTop: "1px solid #e2e4ec",
+          marginTop: 10,
+          paddingTop: 8,
+        }}
+      >
+        <div
+          className="tlabel"
+          style={{ marginBottom: 4, fontWeight: 600, color: "#5c54e8" }}
+        >
+          Main Page body
+        </div>
+        <WebmapNode
+          key={startTitle}
+          origin={origin}
+          title={startTitle}
+          level={0}
+        />
+      </div>
+    </div>
+  );
+}
+
+function NavNodeView({
+  node,
+  origin,
+  level,
+}: {
+  node: NavNode;
+  origin: string;
+  level: number;
+}) {
+  const [open, setOpen] = useState(level < 1);
+  const hasKids = node.children.length > 0;
+  // If this node has a target, we also let the user drill into its outbound
+  // links (toggled separately from the nav-children expand).
+  const [drillOpen, setDrillOpen] = useState(false);
+
+  return (
+    <div style={{ marginLeft: level === 0 ? 0 : 14 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "2px 0",
+        }}
+      >
+        <span
+          onClick={() => hasKids && setOpen((v) => !v)}
+          style={{
+            cursor: hasKids ? "pointer" : "default",
+            fontSize: 10,
+            color: "#5c54e8",
+            width: 12,
+            userSelect: "none",
+          }}
+        >
+          {hasKids ? (open ? "▼" : "▶") : "·"}
+        </span>
+        {node.target ? (
+          <a
+            href={`${origin}/wiki/${encodeURIComponent(
+              node.target.replace(/ /g, "_")
+            )}`}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              fontSize: 12,
+              color: level === 0 ? "#2a2a3f" : "#3a3a55",
+              fontWeight: level === 0 ? 600 : 500,
+              textDecoration: "none",
+            }}
+          >
+            {node.label}
+          </a>
+        ) : (
+          <span
+            style={{
+              fontSize: 12,
+              color: "#5c54e8",
+              fontWeight: 600,
+              textTransform: level === 0 ? "uppercase" : "none",
+              letterSpacing: level === 0 ? ".05em" : undefined,
+            }}
+          >
+            {node.label}
+          </span>
+        )}
+        {node.target && node.label !== node.target && (
+          <span className="tlabel" style={{ fontSize: 10 }}>
+            → {node.target}
+          </span>
+        )}
+        {node.target && (
+          <button
+            className="tbtn"
+            style={{ marginLeft: "auto", fontSize: 10, padding: "1px 6px" }}
+            onClick={() => setDrillOpen((v) => !v)}
+            title="Show outbound links of this page"
+          >
+            {drillOpen ? "hide links" : "drill"}
+          </button>
+        )}
+      </div>
+      {open && hasKids && (
+        <div
+          style={{
+            borderLeft: "1px solid #eceef4",
+            marginLeft: 6,
+            paddingLeft: 4,
+          }}
+        >
+          {node.children.map((c, i) => (
+            <NavNodeView key={i} node={c} origin={origin} level={level + 1} />
+          ))}
+        </div>
+      )}
+      {drillOpen && node.target && (
+        <div
+          style={{
+            borderLeft: "1px dashed #d9cbe8",
+            marginLeft: 6,
+            paddingLeft: 4,
+            marginTop: 2,
+          }}
+        >
+          <WebmapNode
+            origin={origin}
+            title={node.target}
+            level={level + 1}
+            defaultOpen
+          />
+        </div>
+      )}
     </div>
   );
 }
