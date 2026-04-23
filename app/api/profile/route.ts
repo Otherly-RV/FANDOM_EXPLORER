@@ -7,6 +7,7 @@ import {
   createJob,
   findActiveJob,
   getProfile,
+  updateJob,
 } from "@/lib/profiler/cache";
 import { runChunk } from "@/lib/profiler/worker";
 
@@ -110,10 +111,18 @@ export async function POST(req: NextRequest) {
     try {
       const res = await runChunk(jobId);
       if (!res.done) {
-        await fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+        await fetch(runUrl.toString(), { method: "POST" }).catch((e) =>
+          updateJob(jobId, {
+            status: "error",
+            error: "reinvoke fetch failed: " + String(e?.message || e),
+          })
+        );
       }
-    } catch (e) {
-      // swallow — error is recorded on the job row
+    } catch (e: any) {
+      await updateJob(jobId, {
+        status: "error",
+        error: "after() runChunk: " + String(e?.message || e),
+      }).catch(() => {});
     }
   });
 

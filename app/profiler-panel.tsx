@@ -121,10 +121,14 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
           if (!r.ok) return;
           const j = await r.json();
           setJob(j.job);
-          if (j.job?.status === "done" || j.job?.status === "error") {
+          if (j.job?.status === "done") {
             clearInterval(pollRef.current);
             pollRef.current = null;
             loadProfile();
+          } else if (j.job?.status === "error") {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+            // keep job in state so error is visible
           }
         } catch {
           /* ignore transient */
@@ -240,6 +244,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
   }
 
   const running = job && (job.status === "queued" || job.status === "running");
+  const failed = job && job.status === "error";
 
   if (!origin) {
     return (
@@ -335,8 +340,31 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
         </div>
       )}
 
+      {/* Job failure */}
+      {failed && job && (
+        <div
+          style={{
+            border: "1px solid #e07a38",
+            background: "#fbeee2",
+            color: "#a04a18",
+            borderRadius: 8,
+            padding: 10,
+            marginBottom: 12,
+            fontSize: 12,
+          }}
+        >
+          <b>Profile job failed</b>
+          <div style={{ marginTop: 4, fontFamily: "monospace", fontSize: 11 }}>
+            {job.error || "(no error message)"}
+          </div>
+          <div className="tlabel" style={{ marginTop: 4 }}>
+            phase: {job.phase || "?"} · pages: {job.pages_seen} · cats: {job.categories_seen}
+          </div>
+        </div>
+      )}
+
       {/* No profile yet */}
-      {!profile && !running && (
+      {!profile && !running && !failed && (
         <div
           style={{
             padding: 16,
