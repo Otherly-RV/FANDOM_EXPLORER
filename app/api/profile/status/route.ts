@@ -6,8 +6,9 @@
 // background task (Vercel cold-evict, transient error, etc).
 import { NextRequest, NextResponse, after } from "next/server";
 import { sql } from "@/lib/db";
-import { getJob, getProfile } from "@/lib/profiler/cache";
+import { getJob, getProfile, updateJob } from "@/lib/profiler/cache";
 import { parseFandomOrigin } from "@/lib/mw";
+import { runChunk } from "@/lib/profiler/worker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,10 +20,18 @@ function reviveIfStale(req: NextRequest, job: any) {
   if (job.status !== "queued" && job.status !== "running") return false;
   const hb = job.heartbeat_at ? new Date(job.heartbeat_at).getTime() : 0;
   if (Date.now() - hb < STALE_MS) return false;
-  const runUrl = new URL("/api/profile/run", req.nextUrl.origin);
-  runUrl.searchParams.set("jobId", job.id);
+  // Run the next chunk in-process via after() so Vercel extends the invocation
+  // long enough for it to actually execute — avoiding the lost self-fetch
+  // problem.
   after(async () => {
-    await fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+    try {
+      await runChunk(job.id);
+    } catch (e: any) {
+      await updateJob(job.id, {
+        status: "error",
+        error: "watchdog runChunk: " + String(e?.message || e),
+      }).catch(() => {});
+    }
   });
   return true;
 }

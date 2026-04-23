@@ -17,11 +17,19 @@ export async function POST(req: NextRequest) {
   try {
     const res = await runChunk(jobId);
     if (!res.done) {
-      // Self-reinvoke via after() so Vercel doesn't cancel the outgoing fetch.
-      const runUrl = new URL("/api/profile/run", req.nextUrl.origin);
-      runUrl.searchParams.set("jobId", jobId);
+      // Self-reinvoke by running another chunk in the background of *this*
+      // invocation via after(). Vercel will extend the lifetime to let it
+      // finish. Loop a few times to amortize cold-start cost, up to a soft
+      // cap — then let the UI watchdog pick up any remaining work.
       after(async () => {
-        await fetch(runUrl.toString(), { method: "POST" }).catch(() => {});
+        try {
+          for (let i = 0; i < 8; i++) {
+            const r = await runChunk(jobId);
+            if (r.done) break;
+          }
+        } catch (e: any) {
+          // error already persisted by runChunk
+        }
       });
     }
     return NextResponse.json(res);

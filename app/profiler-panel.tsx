@@ -245,6 +245,20 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     }
   }
 
+  async function kickWorker() {
+    if (!job) return;
+    setErr("");
+    try {
+      const r = await fetch(`/api/profile/run?jobId=${job.id}`, { method: "POST" });
+      if (!r.ok) {
+        const t = await r.text();
+        setErr(`kick failed: HTTP ${r.status} ${t.slice(0, 200)}`);
+      }
+    } catch (e: any) {
+      setErr("kick failed: " + (e?.message || e));
+    }
+  }
+
   const running = job && (job.status === "queued" || job.status === "running");
   const failed = job && job.status === "error";
 
@@ -326,6 +340,14 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
                 : ""}
               {job.revived ? " · worker re-kicked" : ""}
             </span>
+            <button
+              className="tbtn"
+              onClick={kickWorker}
+              style={{ marginLeft: 6 }}
+              title="Force-kick the background worker"
+            >
+              Kick
+            </button>
           </div>
           <div
             style={{

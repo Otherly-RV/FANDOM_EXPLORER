@@ -48,11 +48,25 @@ export async function mwGet<T = any>(
   // 3 retries with exponential backoff on 429/5xx.
   while (true) {
     await takeToken(origin);
-    const r = await fetch(u.toString(), {
-      headers: { "User-Agent": UA, Accept: "application/json" },
-      // Revalidate hourly at the edge; profiler callers pass refresh when needed.
-      next: { revalidate: 3600 },
-    });
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 20_000);
+    let r: Response;
+    try {
+      r = await fetch(u.toString(), {
+        headers: { "User-Agent": UA, Accept: "application/json" },
+        signal: ctl.signal,
+        next: { revalidate: 3600 },
+      });
+    } catch (e: any) {
+      clearTimeout(t);
+      if (attempt < 3) {
+        await new Promise((res) => setTimeout(res, 500 * Math.pow(2, attempt)));
+        attempt++;
+        continue;
+      }
+      throw new Error(`MW fetch failed: ${e?.message || e}`);
+    }
+    clearTimeout(t);
     if (r.ok) {
       const j = (await r.json()) as any;
       if (j.error) throw new Error(`MW error: ${j.error.info || j.error.code}`);

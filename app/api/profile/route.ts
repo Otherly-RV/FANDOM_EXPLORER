@@ -103,20 +103,15 @@ export async function POST(req: NextRequest) {
   const jobId = newId();
   await createJob(jobId, origin);
 
-  // Run the first chunk in the background with Vercel's after(), then
-  // let that chunk handle self-reinvocation via /api/profile/run.
-  const runUrl = new URL("/api/profile/run", req.nextUrl.origin);
-  runUrl.searchParams.set("jobId", jobId);
+  // Run chunks in the background via after(). Vercel extends the invocation
+  // so the worker actually executes — unlike a fire-and-forget self-fetch
+  // which Vercel can drop. If the job is still not done after the chunk
+  // budget, the UI watchdog (status poll) will revive it.
   after(async () => {
     try {
-      const res = await runChunk(jobId);
-      if (!res.done) {
-        await fetch(runUrl.toString(), { method: "POST" }).catch((e) =>
-          updateJob(jobId, {
-            status: "error",
-            error: "reinvoke fetch failed: " + String(e?.message || e),
-          })
-        );
+      for (let i = 0; i < 8; i++) {
+        const r = await runChunk(jobId);
+        if (r.done) break;
       }
     } catch (e: any) {
       await updateJob(jobId, {
