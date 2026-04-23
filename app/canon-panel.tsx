@@ -17,7 +17,7 @@ type Analysis = {
 };
 
 const MODEL_OPTIONS: { id: string; provider: Provider; label: string }[] = [
-  { id: "gemini-3.1-pro", provider: "gemini", label: "Gemini 3.1 Pro (default)" },
+  { id: "gemini-3.1-pro-preview", provider: "gemini", label: "Gemini 3.1 Pro Preview (default)" },
   { id: "claude-sonnet-4-6", provider: "claude", label: "Claude Sonnet 4.6" },
   { id: "claude-opus-4-7", provider: "claude", label: "Claude Opus 4.7" },
 ];

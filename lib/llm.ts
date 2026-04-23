@@ -68,7 +68,7 @@ async function callClaude(title: string, sourceText: string): Promise<LLMBrief> 
 async function callGemini(title: string, sourceText: string): Promise<LLMBrief> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
-  const model = process.env.GEMINI_MODEL || "gemini-3.1-pro";
+  const model = process.env.GEMINI_MODEL || "gemini-3.1-pro-preview";
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${key}`;
   const r = await fetch(url, {

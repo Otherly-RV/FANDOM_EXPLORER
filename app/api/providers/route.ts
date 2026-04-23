@@ -12,7 +12,7 @@ export async function GET() {
     providers: availableProviders(),
     defaults: {
       claude: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
-      gemini: process.env.GEMINI_MODEL || "gemini-3.1-pro",
+      gemini: process.env.GEMINI_MODEL || "gemini-3.1-pro-preview",
     },
   });
 }

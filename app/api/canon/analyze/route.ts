@@ -29,14 +29,14 @@ type AnalyzeOut = { tree: CanonNode[]; explanation: string };
 
 // --- model allow-list (safety: never pass arbitrary user strings) ---------
 const MODELS: Record<Provider, string[]> = {
-  gemini: ["gemini-3.1-pro", "gemini-2.5-pro"],
+  gemini: ["gemini-3.1-pro-preview", "gemini-2.5-pro"],
   claude: [
     "claude-opus-4-7",
     "claude-sonnet-4-6",
   ],
 };
 const DEFAULT_MODEL: Record<Provider, string> = {
-  gemini: "gemini-3.1-pro",
+  gemini: "gemini-3.1-pro-preview",
   claude: "claude-sonnet-4-6",
 };
 
