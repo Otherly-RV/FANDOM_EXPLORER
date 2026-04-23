@@ -44,6 +44,21 @@ CREATE INDEX IF NOT EXISTS idx_pages_project ON pages(project_id);
 CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project_id);
 
 -- =========================================================================
+-- Canon snapshots: saved Canon inventory scans.
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS canon_snapshots (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  origin      TEXT NOT NULL,
+  sitename    TEXT,
+  articles    INTEGER,
+  groups_json JSONB NOT NULL,        -- [{gid, category, template?, totalMembers, pages: [...]}]
+  explanation TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_canon_origin ON canon_snapshots(origin);
+
+-- =========================================================================
 -- Drop legacy canon-profiler tables if present (superseded by live sitemap).
 -- =========================================================================
 DROP TABLE IF EXISTS profile_jobs;

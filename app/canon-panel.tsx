@@ -7,11 +7,21 @@
 // shown here comes straight from MediaWiki's wikitext. The LLM only narrates
 // the meta-logic on the right pane. It never rewrites wiki content.
 //
-// Streams from /api/canon/inventory as SSE. Events:
-//   meta / progress / group_start / group_type / page / group_end /
-//   thinking / explanation / error / done
+// Orchestrated client-side in 3 stages:
+//   1. /api/canon/inventory   — titles only (fast)
+//   2. /api/canon/pages       — chunked content (client loops, bypasses Vercel timeout)
+//   3. /api/canon/narrative   — LLM meta explanation
 
-import { useCallback, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+
+// Context so inner components can resolve wiki: links -> in-doc anchors / external URLs
+type LinkCtx = { origin: string; titleIndex: Map<string, string> };
+const LinkContext = createContext<LinkCtx>({ origin: "", titleIndex: new Map() });
+function useLinks() { return useContext(LinkContext); }
+
+function slugify(s: string): string {
+  return "page-" + s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
 
 type Provider = "gemini" | "claude";
 
@@ -74,6 +84,8 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
   const [explanation, setExplanation] = useState<string>("");
   const [thinking, setThinking] = useState<string>("");
   const [showThinking, setShowThinking] = useState<boolean>(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [snapshots, setSnapshots] = useState<Array<{ id: string; name: string; origin: string; sitename?: string; articles?: number; created_at: string; group_count: number }>>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   // Use a ref mirror for mutating groups during stream to avoid stale state.
@@ -82,6 +94,116 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
   const upsertGroup = useCallback((updater: (prev: Group[]) => Group[]) => {
     groupsRef.current = updater(groupsRef.current);
     setGroups(groupsRef.current.slice());
+  }, []);
+
+  // Map page title -> slug anchor so wiki: links can resolve to in-doc anchors.
+  const titleIndex = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of groups) {
+      for (const p of g.pages) {
+        if (!m.has(p.title)) m.set(p.title, slugify(p.title));
+      }
+    }
+    return m;
+  }, [groups]);
+
+  // ---------- Snapshot list (persistent) ----------
+  const refreshSnapshots = useCallback(async () => {
+    try {
+      const r = await fetch("/api/canon/snapshots");
+      if (!r.ok) return;
+      const rows = await r.json();
+      if (Array.isArray(rows)) setSnapshots(rows);
+    } catch { /* */ }
+  }, []);
+  useEffect(() => { refreshSnapshots(); }, [refreshSnapshots]);
+
+  // ---------- Auto-cache last scan per origin in localStorage ----------
+  useEffect(() => {
+    if (!origin) return;
+    const key = `canon:${origin}`;
+    try {
+      const cached = localStorage.getItem(key);
+      if (cached && !groups.length && !loading) {
+        const d = JSON.parse(cached);
+        if (d?.groups?.length) {
+          groupsRef.current = d.groups;
+          setGroups(d.groups);
+          setMeta(d.meta || null);
+          setExplanation(d.explanation || "");
+        }
+      }
+    } catch { /* */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [origin]);
+  useEffect(() => {
+    if (!origin || !groups.length) return;
+    const key = `canon:${origin}`;
+    try {
+      localStorage.setItem(key, JSON.stringify({ meta, groups, explanation }));
+    } catch { /* localStorage quota */ }
+  }, [origin, groups, meta, explanation]);
+
+  const save = useCallback(async () => {
+    if (!origin || !groups.length) return;
+    setSaveState("saving");
+    try {
+      const r = await fetch("/api/canon/snapshots", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: `${meta?.sitename || origin} — ${new Date().toLocaleString()}`,
+          origin,
+          sitename: meta?.sitename,
+          articles: meta?.articles,
+          groups,
+          explanation,
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setSaveState("saved");
+      refreshSnapshots();
+      setTimeout(() => setSaveState("idle"), 2000);
+    } catch {
+      setSaveState("error");
+      setTimeout(() => setSaveState("idle"), 3000);
+    }
+  }, [origin, groups, meta, explanation, refreshSnapshots]);
+
+  const loadSnapshot = useCallback(async (id: string) => {
+    try {
+      const r = await fetch(`/api/canon/snapshots/${id}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      const gs: Group[] = (d.groups || []).map((g: any) => ({
+        gid: g.gid,
+        category: g.category,
+        totalMembers: g.totalMembers || g.total || 0,
+        sampled: g.sampled || (g.pages ? g.pages.length : 0),
+        template: g.template,
+        matched: g.matched,
+        total: g.total,
+        share: g.share,
+        isType: g.isType,
+        done: true,
+        allTitles: g.allTitles || (g.pages || []).map((p: any) => p.title),
+        fetched: (g.pages || []).length,
+        pages: g.pages || [],
+      }));
+      groupsRef.current = gs;
+      setGroups(gs);
+      setMeta({
+        sitename: d.sitename || "",
+        mainpage: "Main Page",
+        articles: d.articles || 0,
+        totalCategories: gs.length,
+      });
+      setExplanation(d.explanation || "");
+      setError("");
+      setProgress([`loaded snapshot ${d.name}`]);
+    } catch (e: any) {
+      setError(e?.message || "load failed");
+    }
   }, []);
 
   const run = useCallback(async () => {
@@ -317,6 +439,7 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
   const totalPages = groups.reduce((n, g) => n + g.pages.length, 0);
 
   return (
+    <LinkContext.Provider value={{ origin, titleIndex }}>
     <div
       style={{
         display: "grid",
@@ -368,11 +491,38 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
           )}
           {groups.length > 0 && !loading && (
             <>
-              <button className="tbtn" onClick={() => downloadHtml(groups, explanation, meta, origin)}
-                title="Download a styled .html you can upload to Google Docs">⬇ HTML</button>
-              <button className="tbtn" onClick={() => downloadMarkdown(groups, explanation, meta, origin)}
+              <button className="tbtn" onClick={() => downloadHtml(groups, explanation, meta, origin, titleIndex)}
+                title="Download styled HTML — upload to Google Docs">⬇ HTML</button>
+              <button className="tbtn" onClick={() => downloadGoogleDoc(groups, explanation, meta, origin, titleIndex)}
+                title="Download a .doc Word-compatible file Google Docs opens natively">⬇ Google Doc</button>
+              <button className="tbtn" onClick={() => downloadMarkdown(groups, explanation, meta, origin, titleIndex)}
                 title="Download as Markdown">⬇ Markdown</button>
+              <button
+                className="tbtn primary"
+                onClick={save}
+                disabled={saveState === "saving"}
+                title="Save this scan to the server"
+              >
+                {saveState === "saving" ? "Saving…" : saveState === "saved" ? "✓ Saved" : saveState === "error" ? "Save failed" : "💾 Save project"}
+              </button>
             </>
+          )}
+          {snapshots.length > 0 && (
+            <select
+              className="tbtn"
+              style={{ appearance: "auto", fontSize: 11 }}
+              value=""
+              onChange={(e) => { if (e.target.value) loadSnapshot(e.target.value); }}
+              disabled={loading}
+              title="Load a saved scan"
+            >
+              <option value="">📂 Load project…</option>
+              {snapshots.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.sitename || s.origin} — {new Date(s.created_at).toLocaleDateString()} ({s.group_count} groups)
+                </option>
+              ))}
+            </select>
           )}
         </div>
 
@@ -481,6 +631,7 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
           : <div className="tlabel">{loading ? "Waiting for the inventory to finish…" : "Scan the wiki to generate the explanation."}</div>}
       </div>
     </div>
+    </LinkContext.Provider>
   );
 }
 
@@ -550,8 +701,20 @@ function PageRow({ p }: { p: PageRow }) {
   const hasLead = !!p.lead.trim();
   const hasSections = p.sections.length > 0;
   const expandable = hasFields || hasLead || hasSections;
+  const anchor = slugify(p.title);
+
+  // When a wiki: link points to this page, scroll it into view and expand.
+  useEffect(() => {
+    function handler(e: Event) {
+      const ev = e as CustomEvent<{ title: string }>;
+      if (ev.detail?.title === p.title) setOpen(true);
+    }
+    window.addEventListener("canon:reveal", handler as EventListener);
+    return () => window.removeEventListener("canon:reveal", handler as EventListener);
+  }, [p.title]);
+
   return (
-    <div style={{ borderTop: "1px solid #f1f3fa" }}>
+    <div id={anchor} style={{ borderTop: "1px solid #f1f3fa", scrollMarginTop: 50 }}>
       <div
         onClick={() => expandable && setOpen((v) => !v)}
         style={{
@@ -595,10 +758,10 @@ function PageRow({ p }: { p: PageRow }) {
           )}
           {hasLead && (
             <div style={{
-              fontSize: 12, color: "#2a2a3f", whiteSpace: "pre-wrap",
+              fontSize: 12, color: "#2a2a3f",
               lineHeight: 1.5, marginBottom: 10, borderLeft: "2px solid #eceef4",
-              paddingLeft: 8,
-            }}>{p.lead}</div>
+              paddingLeft: 8, whiteSpace: "pre-wrap",
+            }}><LinkedText text={p.lead} /></div>
           )}
           {hasSections && p.sections.map((s, i) => (
             <div key={i} style={{ marginTop: 8 }}>
@@ -608,10 +771,11 @@ function PageRow({ p }: { p: PageRow }) {
                 paddingLeft: (s.level - 2) * 10,
               }}>{s.heading}</div>
               <div style={{
-                fontSize: 12, color: "#2a2a3f", whiteSpace: "pre-wrap",
+                fontSize: 12, color: "#2a2a3f",
                 lineHeight: 1.5, paddingLeft: (s.level - 2) * 10 + 4,
                 borderLeft: "2px solid #eceef4", marginLeft: (s.level - 2) * 10,
-              }}>{s.text}</div>
+                whiteSpace: "pre-wrap",
+              }}><LinkedText text={s.text} /></div>
             </div>
           ))}
         </div>
@@ -625,12 +789,66 @@ const codeStyle: React.CSSProperties = {
   fontFamily: "monospace", fontSize: ".9em", color: "#5c54e8",
 };
 
+// Renders text with [label](url) markdown links preserved.
+// wiki:Target links resolve to in-doc anchors when the target title is known,
+// otherwise fall through to the origin's /wiki/Target URL.
+function LinkedText({ text }: { text: string }) {
+  const { origin, titleIndex } = useLinks();
+  const parts: React.ReactNode[] = [];
+  const re = /\[([^\]]+)\]\(([^)]+)\)/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const label = m[1];
+    const href = m[2];
+    if (href.startsWith("wiki:")) {
+      const target = href.slice(5).trim();
+      const slug = titleIndex.get(target);
+      if (slug) {
+        parts.push(
+          <a
+            key={idx++}
+            href={`#${slug}`}
+            onClick={(e) => {
+              e.preventDefault();
+              const el = document.getElementById(slug);
+              if (el) {
+                el.scrollIntoView({ behavior: "smooth", block: "start" });
+                window.dispatchEvent(new CustomEvent("canon:reveal", { detail: { title: target } }));
+              }
+            }}
+            style={{ color: "#5c54e8", textDecoration: "none", borderBottom: "1px dotted #5c54e8" }}
+            title={`Go to ${target}`}
+          >{label}</a>
+        );
+      } else {
+        const url = `${origin}/wiki/${encodeURIComponent(target.replace(/ /g, "_"))}`;
+        parts.push(
+          <a key={idx++} href={url} target="_blank" rel="noreferrer"
+             style={{ color: "#2a2a3f", textDecoration: "none", borderBottom: "1px dotted #aaa" }}
+             title={`External: ${target}`}>{label}</a>
+        );
+      }
+    } else {
+      parts.push(
+        <a key={idx++} href={href} target="_blank" rel="noreferrer"
+           style={{ color: "#2a2a3f", textDecoration: "underline" }}>{label}</a>
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
+
 function FieldRow({ k, v }: { k: string; v: string }) {
   return (
     <>
       <div style={{ fontSize: 11, color: "#5c54e8", fontFamily: "monospace", paddingTop: 2 }}>{k}</div>
       <div style={{ fontSize: 11, color: "#2a2a3f", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-        {v || <span style={{ color: "#bbb" }}>(empty)</span>}
+        {v ? <LinkedText text={v} /> : <span style={{ color: "#bbb" }}>(empty)</span>}
       </div>
     </>
   );
@@ -707,7 +925,18 @@ function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function downloadMarkdown(groups: Group[], explanation: string, meta: Meta | null, origin: string) {
+// Resolve [label](wiki:Target) tokens to real URLs or in-doc anchors.
+function resolveWiki(text: string, origin: string, titleIndex: Map<string, string>, mode: "anchor" | "url"): string {
+  return text.replace(/\[([^\]]+)\]\(wiki:([^)]+)\)/g, (_m, label, target) => {
+    const t = String(target).trim();
+    const slug = titleIndex.get(t);
+    if (slug && mode === "anchor") return `[${label}](#${slug})`;
+    const url = `${origin}/wiki/${encodeURIComponent(t.replace(/ /g, "_"))}`;
+    return `[${label}](${url})`;
+  });
+}
+
+function downloadMarkdown(groups: Group[], explanation: string, meta: Meta | null, origin: string, titleIndex: Map<string, string>) {
   const title = meta?.sitename || origin;
   const parts: string[] = [];
   parts.push(`# Canon inventory — ${title}`);
@@ -720,33 +949,34 @@ function downloadMarkdown(groups: Group[], explanation: string, meta: Meta | nul
   const types = groups.filter((g) => g.isType);
   const others = groups.filter((g) => g.isType === false);
   parts.push(`## Item types`);
-  for (const g of types) parts.push(groupToMarkdown(g));
+  for (const g of types) parts.push(groupToMarkdown(g, origin, titleIndex));
   if (others.length) {
     parts.push(`## Other categories`);
-    for (const g of others) parts.push(groupToMarkdown(g));
+    for (const g of others) parts.push(groupToMarkdown(g, origin, titleIndex));
   }
   downloadBlob(`canon-${filenameSafe(title)}.md`, "text/markdown;charset=utf-8", parts.join("\n"));
 }
 
-function groupToMarkdown(g: Group): string {
+function groupToMarkdown(g: Group, origin: string, titleIndex: Map<string, string>): string {
   const lines: string[] = [];
   lines.push(`### ${g.category}${g.template ? ` — \`${g.template}\`` : ""} (${g.pages.length}/${g.totalMembers})`);
   for (const p of g.pages) {
-    lines.push(`#### [${p.title}](${p.url})`);
+    const anchor = slugify(p.title);
+    lines.push(`#### <a id="${anchor}"></a>[${p.title}](${p.url})`);
     if (p.fields.length) {
       for (const [k, v] of p.fields) {
-        lines.push(`- **${k}:** ${v || "_(empty)_"}`);
+        lines.push(`- **${k}:** ${v ? resolveWiki(v, origin, titleIndex, "anchor") : "_(empty)_"}`);
       }
     }
     if (p.lead.trim()) {
       lines.push("");
-      lines.push(p.lead);
+      lines.push(resolveWiki(p.lead, origin, titleIndex, "anchor"));
     }
     for (const s of p.sections) {
       const prefix = "#".repeat(Math.min(Math.max(s.level + 2, 3), 6));
       lines.push("");
       lines.push(`${prefix} ${s.heading}`);
-      lines.push(s.text);
+      lines.push(resolveWiki(s.text, origin, titleIndex, "anchor"));
     }
     lines.push("");
   }
@@ -754,7 +984,20 @@ function groupToMarkdown(g: Group): string {
   return lines.join("\n");
 }
 
-function downloadHtml(groups: Group[], explanation: string, meta: Meta | null, origin: string) {
+function downloadGoogleDoc(groups: Group[], explanation: string, meta: Meta | null, origin: string, titleIndex: Map<string, string>) {
+  // .doc with application/msword MIME — MS Word opens natively, Google Docs imports cleanly.
+  const html = buildHtml(groups, explanation, meta, origin, titleIndex);
+  const title = meta?.sitename || origin;
+  downloadBlob(`canon-${filenameSafe(title)}.doc`, "application/msword", html);
+}
+
+function downloadHtml(groups: Group[], explanation: string, meta: Meta | null, origin: string, titleIndex: Map<string, string>) {
+  const html = buildHtml(groups, explanation, meta, origin, titleIndex);
+  const title = meta?.sitename || origin;
+  downloadBlob(`canon-${filenameSafe(title)}.html`, "text/html;charset=utf-8", html);
+}
+
+function buildHtml(groups: Group[], explanation: string, meta: Meta | null, origin: string, titleIndex: Map<string, string>) {
   const title = meta?.sitename || origin;
   const expl = markdownToHtml(explanation || "");
   const types = groups.filter((g) => g.isType);
@@ -762,15 +1005,16 @@ function downloadHtml(groups: Group[], explanation: string, meta: Meta | null, o
 
   const groupHtml = (g: Group) => {
     const pages = g.pages.map((p) => {
+      const anchor = slugify(p.title);
       const fields = p.fields.length
-        ? "<dl>" + p.fields.map(([k, v]) => `<dt>${escHtml(k)}</dt><dd>${escHtml(v || "")}</dd>`).join("") + "</dl>"
+        ? "<dl>" + p.fields.map(([k, v]) => `<dt>${escHtml(k)}</dt><dd>${inline(resolveWiki(v || "", origin, titleIndex, "anchor"))}</dd>`).join("") + "</dl>"
         : "";
-      const lead = p.lead.trim() ? `<p>${escHtml(p.lead).replace(/\n/g, "<br>")}</p>` : "";
+      const lead = p.lead.trim() ? `<p>${inline(resolveWiki(p.lead, origin, titleIndex, "anchor")).replace(/\n/g, "<br>")}</p>` : "";
       const sections = p.sections.map((s) => {
         const lvl = Math.min(Math.max(s.level + 1, 4), 6);
-        return `<h${lvl}>${escHtml(s.heading)}</h${lvl}><p>${escHtml(s.text).replace(/\n/g, "<br>")}</p>`;
+        return `<h${lvl}>${escHtml(s.heading)}</h${lvl}><p>${inline(resolveWiki(s.text, origin, titleIndex, "anchor")).replace(/\n/g, "<br>")}</p>`;
       }).join("");
-      return `<article><h4><a href="${escHtml(p.url)}">${escHtml(p.title)}</a></h4>${fields}${lead}${sections}</article>`;
+      return `<article id="${anchor}"><h4><a href="${escHtml(p.url)}">${escHtml(p.title)}</a></h4>${fields}${lead}${sections}</article>`;
     }).join("");
     return `<section><h3>${escHtml(g.category)}${g.template ? ` <code>${escHtml(g.template)}</code>` : ""} <span class="count">(${g.pages.length}/${g.totalMembers})</span></h3>${pages}</section>`;
   };
@@ -809,7 +1053,7 @@ ${types.map(groupHtml).join("\n")}
 ${others.length ? `<h2>Other categories</h2>\n${others.map(groupHtml).join("\n")}` : ""}
 </body></html>`;
 
-  downloadBlob(`canon-${filenameSafe(title)}.html`, "text/html;charset=utf-8", html);
+  return html;
 }
 
 function markdownToHtml(md: string): string {
@@ -830,10 +1074,25 @@ function markdownToHtml(md: string): string {
   }).filter(Boolean).join("\n");
 }
 function inline(s: string): string {
-  return escHtml(s)
+  // Extract [label](url) tokens first (before escaping), replace with placeholders,
+  // escape the rest, then reinsert as real anchors.
+  const links: { label: string; url: string }[] = [];
+  const withPh = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => {
+    const i = links.length;
+    links.push({ label, url });
+    return `\u0001${i}\u0002`;
+  });
+  let out = escHtml(withPh)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
+  out = out.replace(/\u0001(\d+)\u0002/g, (_m, idx) => {
+    const { label, url } = links[Number(idx)];
+    const safeUrl = escHtml(url);
+    const safeLabel = escHtml(label);
+    return `<a href="${safeUrl}">${safeLabel}</a>`;
+  });
+  return out;
 }
 
 // ===========================================================================

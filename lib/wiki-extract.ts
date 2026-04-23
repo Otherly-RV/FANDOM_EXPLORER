@@ -117,8 +117,13 @@ function cleanValue(raw: string): string {
   s = s.replace(/<!--[\s\S]*?-->/g, "");
   s = s.replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, "");
   s = s.replace(/<ref[^>]*\/\s*>/gi, "");
-  s = s.replace(/\[\[([^\]\|]+)\|([^\]]+)\]\]/g, "$2");
-  s = s.replace(/\[\[([^\]]+)\]\]/g, "$1");
+  // Wiki links: preserve as markdown links with wiki: scheme.
+  s = s.replace(/\[\[([^\]\|#]+)(?:#[^\]\|]+)?\|([^\]]+)\]\]/g, (_m, target: string, label: string) => `[${label}](wiki:${target.trim()})`);
+  s = s.replace(/\[\[([^\]]+)\]\]/g, (_m, target: string) => {
+    const t = target.split("#")[0].trim();
+    return `[${target}](wiki:${t})`;
+  });
+  // Simple templates: drop {{name|…}} keeping last positional arg.
   s = s.replace(/\{\{[^{}]*\}\}/g, (m) => {
     const inner = m.slice(2, -2);
     const bits = inner.split("|");
@@ -140,9 +145,14 @@ function cleanProse(raw: string): string {
   s = s.replace(/\{\|[\s\S]*?\|\}/g, "");
   s = s.replace(/\[\[(?:File|Image):[^\]]*(?:\[\[[^\]]*\]\][^\]]*)*\]\]/gi, "");
   s = s.replace(/\[\[Category:[^\]]+\]\]/gi, "");
-  s = s.replace(/\[\[([^\]\|]+)\|([^\]]+)\]\]/g, "$2");
-  s = s.replace(/\[\[([^\]]+)\]\]/g, "$1");
-  s = s.replace(/\[https?:\/\/\S+\s+([^\]]+)\]/g, "$1");
+  // Preserve wiki links as markdown [label](wiki:Target)
+  s = s.replace(/\[\[([^\]\|#]+)(?:#[^\]\|]+)?\|([^\]]+)\]\]/g, (_m, target: string, label: string) => `[${label}](wiki:${target.trim()})`);
+  s = s.replace(/\[\[([^\]]+)\]\]/g, (_m, target: string) => {
+    const t = target.split("#")[0].trim();
+    return `[${target}](wiki:${t})`;
+  });
+  // External links -> markdown
+  s = s.replace(/\[(https?:\/\/\S+)\s+([^\]]+)\]/g, "[$2]($1)");
   s = s.replace(/\[https?:\/\/\S+\]/g, "");
   s = s.replace(/'{2,5}/g, "");
   s = s.replace(/<br\s*\/?>/gi, "\n");
