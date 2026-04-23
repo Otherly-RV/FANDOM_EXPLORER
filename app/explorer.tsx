@@ -2,6 +2,7 @@
 // app/explorer.tsx — UI client. Fetches real structure from /api/crawl,
 // persists snapshots via /api/projects (Neon, server-side only).
 import { useEffect, useRef, useState } from "react";
+import ProfilerPanel from "./profiler-panel";
 
 type Section = { heading: string; level: number; anchor: string };
 type LLMProvider = "claude" | "gemini" | "none";
@@ -54,7 +55,7 @@ export default function Explorer() {
   const [urlIn, setUrlIn] = useState("https://harrypotter.fandom.com/wiki/Harry_Potter");
   const [maxP, setMaxP] = useState(25);
   const [crawling, setCrawling] = useState(false);
-  const [viewMode, setViewMode] = useState<"network" | "tree">("network");
+  const [viewMode, setViewMode] = useState<"network" | "tree" | "canon">("network");
   const [allExpanded, setAllExpanded] = useState(false);
   const [status, setStatus] = useState("Ready — enter a Fandom URL and click Crawl.");
   const [provider, setProvider] = useState<LLMProvider>("none");
@@ -529,7 +530,10 @@ export default function Explorer() {
         <button className="tbtn" disabled={crawling || !nodes.length} onClick={resumeCrawl} title="Continue crawling uncrawled links">Resume</button>
         {crawling && <button className="tbtn danger" onClick={stopCrawl}>Stop</button>}
         <div style={{ flex: 1 }} />
-        <button className={`tbtn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")}>
+        <button className={`tbtn${viewMode === "canon" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon" ? "network" : "canon")} title="Canon profiler: canon policy, editorial hubs, category DAG">
+          {viewMode === "canon" ? "Show Crawl" : "Canon Profile"}
+        </button>
+        <button className={`tbtn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")} disabled={viewMode === "canon"}>
           {viewMode === "network" ? "Show Tree" : "Show Network"}
         </button>
         <button className="tbtn" onClick={() => setAllExpanded((v) => !v)}>{allExpanded ? "Collapse All" : "Expand All"}</button>
@@ -537,6 +541,13 @@ export default function Explorer() {
         <button className="tbtn" onClick={openProjects}>📁 Projects</button>
       </div>
       <div id="progress" style={{ width: progressRef.current + "%" }} />
+      {viewMode === "canon" ? (
+        <div id="main">
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            <ProfilerPanel urlIn={urlIn} />
+          </div>
+        </div>
+      ) : (
       <div id="main">
         <div id="left">
           <div id="left-hdr">
@@ -570,6 +581,7 @@ export default function Explorer() {
           </div>
         </div>
       </div>
+      )}
       <div id="statusbar"><span>{status}</span><span /></div>
 
       <div id="proj-modal" className={projModal ? "open" : ""}>
