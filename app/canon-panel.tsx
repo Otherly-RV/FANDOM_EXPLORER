@@ -368,54 +368,7 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
       }));
 
       // ---------- STAGE 3: meta narrative ----------
-      setProgress((p) => [...p, `calling ${opt.provider} · ${opt.id} for meta explanation`]);
-      const llmGroups = groupsRef.current.map((g) => ({
-        category: g.category,
-        template: g.template,
-        total: g.totalMembers,
-        sampled: g.pages.length,
-        isType: g.isType === true,
-        pages: g.pages.slice(0, 20).map((p) => ({
-          title: p.title,
-          fieldKeys: p.fields.map(([k]) => k),
-          sectionHeadings: p.sections.map((s) => s.heading),
-        })),
-      }));
-      const narr = await fetch("/api/canon/narrative", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          provider: opt.provider,
-          model: opt.id,
-          site: {
-            sitename: meta?.sitename || origin,
-            origin,
-            articles: meta?.articles || 0,
-          },
-          groups: llmGroups,
-        }),
-        signal: ctl.signal,
-      });
-      if (!narr.ok || !narr.body) {
-        throw new Error(`narrative HTTP ${narr.status}`);
-      }
-      const nReader = narr.body.getReader();
-      let nBuf = "";
-      while (true) {
-        const { value, done } = await nReader.read();
-        if (done) break;
-        nBuf += dec.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = nBuf.indexOf("\n\n")) >= 0) {
-          const raw = nBuf.slice(0, idx);
-          nBuf = nBuf.slice(idx + 2);
-          const ev = parseSSE(raw);
-          if (!ev) continue;
-          if (ev.event === "thinking") setThinking((t) => t + String(ev.data?.text || ""));
-          else if (ev.event === "explanation") setExplanation(String(ev.data?.text || ""));
-          else if (ev.event === "error") setError(String(ev.data?.error || "narrative error"));
-        }
-      }
+      await runNarrative(opt, ctl.signal);
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(e?.message || "failed");
     } finally {
@@ -423,6 +376,79 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
       abortRef.current = null;
     }
   }, [origin, modelId, pageBudget, meta, upsertGroup]);
+
+  // Run Stage 3 only — usable after load-snapshot, or after a narrative failure.
+  const runNarrative = useCallback(async (opt?: typeof MODEL_OPTIONS[number], signal?: AbortSignal): Promise<void> => {
+    const o = opt || MODEL_OPTIONS.find((m) => m.id === modelId)!;
+    if (!groupsRef.current.length) { setError("No inventory to narrate. Scan first."); return; }
+    setError("");
+    setThinking("");
+    setExplanation("");
+    setProgress((p) => [...p, `calling ${o.provider} · ${o.id} for meta explanation`]);
+    const llmGroups = groupsRef.current.map((g) => ({
+      category: g.category,
+      template: g.template,
+      total: g.totalMembers,
+      sampled: g.pages.length,
+      isType: g.isType === true,
+      pages: g.pages.slice(0, 20).map((p) => ({
+        title: p.title,
+        fieldKeys: p.fields.map(([k]) => k),
+        sectionHeadings: p.sections.map((s) => s.heading),
+      })),
+    }));
+    const narr = await fetch("/api/canon/narrative", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: o.provider,
+        model: o.id,
+        site: {
+          sitename: meta?.sitename || origin,
+          origin,
+          articles: meta?.articles || 0,
+        },
+        groups: llmGroups,
+      }),
+      signal,
+    });
+    if (!narr.ok || !narr.body) {
+      const t = await narr.text().catch(() => "");
+      throw new Error(`narrative HTTP ${narr.status}: ${t.slice(0, 200)}`);
+    }
+    const nReader = narr.body.getReader();
+    const dec = new TextDecoder();
+    let nBuf = "";
+    while (true) {
+      const { value, done } = await nReader.read();
+      if (done) break;
+      nBuf += dec.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = nBuf.indexOf("\n\n")) >= 0) {
+        const raw = nBuf.slice(0, idx);
+        nBuf = nBuf.slice(idx + 2);
+        const ev = parseSSE(raw);
+        if (!ev) continue;
+        if (ev.event === "thinking") setThinking((t) => t + String(ev.data?.text || ""));
+        else if (ev.event === "explanation") setExplanation(String(ev.data?.text || ""));
+        else if (ev.event === "error") setError(String(ev.data?.error || "narrative error"));
+      }
+    }
+  }, [origin, modelId, meta]);
+
+  const regenerateMeta = useCallback(async () => {
+    setLoading(true);
+    const ctl = new AbortController();
+    abortRef.current = ctl;
+    try {
+      await runNarrative(undefined, ctl.signal);
+    } catch (e: any) {
+      if (e?.name !== "AbortError") setError(e?.message || "narrative failed");
+    } finally {
+      setLoading(false);
+      abortRef.current = null;
+    }
+  }, [runNarrative]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -628,7 +654,37 @@ export default function CanonPanel({ urlIn }: { urlIn: string }) {
 
         {explanation
           ? <MarkdownBlock text={explanation} />
-          : <div className="tlabel">{loading ? "Waiting for the inventory to finish…" : "Scan the wiki to generate the explanation."}</div>}
+          : (
+            <div>
+              {error && (
+                <div style={{
+                  background: "#fff4f4", border: "1px solid #f5c2c2", borderRadius: 6,
+                  padding: "8px 10px", marginBottom: 10, fontSize: 12, color: "#a13232",
+                }}>
+                  <strong>Error:</strong> {error}
+                </div>
+              )}
+              <div className="tlabel" style={{ marginBottom: 10 }}>
+                {loading
+                  ? "Waiting for the inventory to finish…"
+                  : groups.length
+                    ? "Inventory ready — click below to generate the meta explanation."
+                    : "Scan the wiki to generate the explanation."}
+              </div>
+              {groups.length > 0 && !loading && (
+                <button className="tbtn primary" onClick={regenerateMeta}>
+                  ⚡ Generate meta explanation
+                </button>
+              )}
+            </div>
+          )}
+        {explanation && !loading && groups.length > 0 && (
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #eceef4" }}>
+            <button className="tbtn" onClick={regenerateMeta} style={{ fontSize: 11 }}>
+              🔄 Regenerate
+            </button>
+          </div>
+        )}
       </div>
     </div>
     </LinkContext.Provider>
