@@ -134,9 +134,11 @@ export async function runChunk(jobId: string): Promise<ChunkResult> {
       visitedCats.add(cat);
       await upsertCategoryEdge(origin, cat, parent, depth);
 
-      // Pull this category's members. This itself can be slow for huge cats;
-      // we let it run to completion (MediaWiki returns 500 at a time).
-      await categoryMembers(origin, cat, "page|subcat", Infinity, async (batch) => {
+      // Pull this category's members. Cap per call so a single giant
+      // category can't burn our entire budget — 5000 is enough for structure;
+      // anything bigger is re-queued via a soft depth-based heuristic.
+      await categoryMembers(origin, cat, "page|subcat", 5000, async (batch) => {
+        if (outOfBudget()) throw new Error("__OUT_OF_BUDGET__");
         for (const m of batch) {
           if (m.ns === 14) {
             const sub = String(m.title).replace(/^Category:/, "");
@@ -154,6 +156,9 @@ export async function runChunk(jobId: string): Promise<ChunkResult> {
         }
         // Frequent heartbeat during a fat category.
         await heartbeatJob(jobId);
+      }).catch((e) => {
+        if (String(e?.message) === "__OUT_OF_BUDGET__") return;
+        throw e;
       });
 
       state.categoriesSeen = visitedCats.size;

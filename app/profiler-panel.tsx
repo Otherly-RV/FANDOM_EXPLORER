@@ -35,6 +35,8 @@ type Job = {
   pct: number;
   error: string | null;
   updated_at: string;
+  heartbeat_age_s?: number | null;
+  revived?: boolean;
 };
 
 type Hubs = { hubs: Record<string, Record<string, string[]>>; count: number };
@@ -317,6 +319,12 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
             <b>{job.phase || job.status}</b>
             <span className="tlabel">
               · {job.pages_seen} pages · {job.categories_seen} cats · {job.hubs_seen} hub links
+            </span>
+            <span className="tlabel" style={{ marginLeft: "auto" }}>
+              {typeof job.heartbeat_age_s === "number"
+                ? `last update ${job.heartbeat_age_s}s ago`
+                : ""}
+              {job.revived ? " · worker re-kicked" : ""}
             </span>
           </div>
           <div
