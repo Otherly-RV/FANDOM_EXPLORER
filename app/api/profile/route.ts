@@ -24,9 +24,25 @@ export async function GET(req: NextRequest) {
     const origin = originRaw.includes("/wiki/")
       ? parseFandomOrigin(originRaw)
       : new URL(originRaw).origin;
-    const row = await getProfile(origin);
-    if (!row) return NextResponse.json({ cached: false }, { status: 404 });
-    return NextResponse.json({ cached: true, profile: row });
+    try {
+      const row = await getProfile(origin);
+      if (!row) return NextResponse.json({ cached: false }, { status: 404 });
+      return NextResponse.json({ cached: true, profile: row });
+    } catch (dbErr: any) {
+      // Most common cause: schema not migrated yet on this DB.
+      const msg = String(dbErr?.message || dbErr);
+      const needsMigrate = /wiki_profiles|relation .* does not exist/i.test(msg);
+      return NextResponse.json(
+        {
+          cached: false,
+          error: needsMigrate
+            ? "DB not migrated — run /api/admin/migrate"
+            : msg,
+          needsMigrate,
+        },
+        { status: 500 }
+      );
+    }
   } catch (e: any) {
     return NextResponse.json(
       { error: e.message || "bad origin" },

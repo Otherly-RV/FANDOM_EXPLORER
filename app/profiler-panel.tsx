@@ -85,15 +85,19 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     setErr("");
     try {
       const r = await fetch(`/api/profile?origin=${encodeURIComponent(origin)}`);
+      const text = await r.text();
+      let j: any = {};
+      try { j = text ? JSON.parse(text) : {}; } catch { /* non-JSON error page */ }
       if (r.ok) {
-        const j = await r.json();
         setProfile(j.profile);
         setJob(null);
       } else if (r.status === 404) {
         setProfile(null);
+        if (j.needsMigrate) setErr("Database not migrated yet. Run /api/admin/migrate?token=… once.");
       } else {
-        const j = await r.json().catch(() => ({}));
-        setErr(j.error || `HTTP ${r.status}`);
+        setProfile(null);
+        if (j.needsMigrate) setErr("Database not migrated yet. Run /api/admin/migrate?token=… once.");
+        else setErr(j.error || `HTTP ${r.status}`);
       }
     } catch (e: any) {
       setErr(e.message || "failed");
