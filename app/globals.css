@@ -2,7 +2,7 @@
 html,body{height:100%}
 body{font-family:system-ui,sans-serif;font-size:13px;background:#ffffff;color:#1a1a2a;display:flex;flex-direction:column;overflow:hidden}
 
-#topbar{padding:7px 10px;background:#fafafc;border-bottom:1px solid #e2e4ec;display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap}
+#topbar{padding:7px 10px;background:#ffffff;border-bottom:1px solid #e2e4ec;display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap}
 #topbar input[type=text]{flex:1;min-width:160px;padding:5px 9px;background:#ffffff;border:1px solid #d4d7e0;border-radius:5px;color:#1a1a2a;font-size:12px;outline:none}
 #topbar input[type=text]:focus{border-color:#5c54e8}
 #topbar input[type=number]{width:60px;padding:5px 6px;background:#ffffff;border:1px solid #d4d7e0;border-radius:5px;color:#1a1a2a;font-size:12px;outline:none;text-align:center}
