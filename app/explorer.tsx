@@ -539,8 +539,8 @@ export default function Explorer() {
         <button className="tbtn" disabled={crawling || !nodes.length} onClick={resumeCrawl} title="Continue crawling uncrawled links">Resume</button>
         {crawling && <button className="tbtn danger" onClick={stopCrawl}>Stop</button>}
         <div style={{ flex: 1 }} />
-        <button className={`tbtn${viewMode === "canon" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon" ? "network" : "canon")} title="Canon profiler: canon policy, editorial hubs, category DAG">
-          {viewMode === "canon" ? "Show Crawl" : "Canon Profile"}
+        <button className={`tbtn${viewMode === "canon" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon" ? "network" : "canon")} title="Hypertext webmap of the wiki">
+          {viewMode === "canon" ? "Show Crawl" : "Webmap"}
         </button>
         <button className={`tbtn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")} disabled={viewMode === "canon"}>
           {viewMode === "network" ? "Show Tree" : "Show Network"}
