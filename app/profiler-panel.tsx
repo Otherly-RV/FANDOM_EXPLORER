@@ -1,21 +1,13 @@
 "use client";
 // app/profiler-panel.tsx
-// Hypertext webmap view for a Fandom wiki.
-// Starts from the Main Page and lazily walks outbound wiki-links.
+// Sitemap view: MediaWiki:Wiki-navigation (top menu) + per-page table of
+// contents. Nothing else.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Profile = {
   origin: string;
   sitename: string | null;
   mainpage: string | null;
-};
-
-type Job = {
-  id: string;
-  status: "queued" | "running" | "done" | "error";
-  phase: string | null;
-  pct: number;
-  error: string | null;
 };
 
 function deriveOrigin(input: string): string {
@@ -40,12 +32,8 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
   const origin = deriveOrigin(urlIn);
 
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
   const [err, setErr] = useState<string>("");
 
-  const pollRef = useRef<any>(null);
-
-  // Try to load a cached profile just for sitename + mainpage.
   const loadProfile = useCallback(async () => {
     if (!origin) return;
     setErr("");
@@ -53,13 +41,9 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
       const r = await fetch(`/api/profile?origin=${encodeURIComponent(origin)}`);
       const text = await r.text();
       let j: any = {};
-      try { j = text ? JSON.parse(text) : {}; } catch { /* non-JSON error */ }
-      if (r.ok) {
-        setProfile(j.profile);
-        setJob(null);
-      } else {
-        setProfile(null);
-      }
+      try { j = text ? JSON.parse(text) : {}; } catch { /* */ }
+      if (r.ok) setProfile(j.profile);
+      else setProfile(null);
     } catch (e: any) {
       setErr(e.message || "failed");
     }
@@ -69,80 +53,15 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     loadProfile();
   }, [loadProfile]);
 
-  const startPolling = useCallback(
-    (jobId: string) => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(async () => {
-        try {
-          const r = await fetch(`/api/profile/status?jobId=${jobId}`);
-          if (!r.ok) return;
-          const j = await safeJson(r);
-          setJob(j.job);
-          if (j.job?.status === "done") {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-            loadProfile();
-          } else if (j.job?.status === "error") {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-        } catch { /* ignore */ }
-      }, 2000);
-    },
-    [loadProfile]
-  );
-
-  useEffect(() => () => {
-    if (pollRef.current) clearInterval(pollRef.current);
-  }, []);
-
-  async function startProfile(refresh = false) {
-    if (!origin) return;
-    setErr("");
-    try {
-      const r = await fetch("/api/profile", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ origin, refresh }),
-      });
-      const j = await safeJson(r);
-      if (!r.ok) {
-        setErr(j.error || `HTTP ${r.status}`);
-        return;
-      }
-      if (j.status === "done" && j.profile) {
-        setProfile(j.profile);
-        setJob(null);
-        return;
-      }
-      if (j.jobId) {
-        setJob({
-          id: j.jobId,
-          status: j.status,
-          phase: "queued",
-          pct: 0,
-          error: null,
-        });
-        startPolling(j.jobId);
-      }
-    } catch (e: any) {
-      setErr(e.message || "failed");
-    }
-  }
-
-  const running = job && (job.status === "queued" || job.status === "running");
-
   if (!origin) {
     return (
       <div style={{ padding: 16, color: "#888" }}>
-        Enter a Fandom URL in the top bar to explore the wiki.
+        Enter a Fandom URL in the top bar.
       </div>
     );
   }
 
-  // The webmap doesn't actually need the cached profile — it just needs a
-  // starting title. Default to "Main Page" if we haven't probed yet.
-  const startTitle = profile?.mainpage || "Main Page";
+  const mainpage = profile?.mainpage || "Main Page";
 
   return (
     <div style={{ padding: 12, overflowY: "auto", height: "100%" }}>
@@ -162,135 +81,109 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 10,
+        }}
+      >
         <div style={{ fontWeight: 600, fontSize: 13 }}>
           {profile?.sitename || origin}
         </div>
         <div className="tlabel">{origin}</div>
-        <div style={{ flex: 1 }} />
-        {!running && (
-          <button
-            className="tbtn"
-            onClick={() => startProfile(false)}
-            title="Re-probe sitename & main page"
-          >
-            {profile ? "Re-check" : "Probe wiki"}
-          </button>
-        )}
-        {running && job && (
-          <span className="tlabel">
-            <span className="spin" /> {job.phase || job.status} · {job.pct}%
-          </span>
-        )}
       </div>
 
-      <WebmapView origin={origin} startTitle={startTitle} />
+      {/* Home page root */}
+      <RootNode origin={origin} mainpage={mainpage} />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Webmap: the wiki's real navigation tree, straight from
-// MediaWiki:Wiki-navigation — the menu editors curate for the top navbar.
-// Each link can also be expanded to see its own outbound mainspace links.
+// Root: Home Page label + the curated nav menu underneath it.
 // ---------------------------------------------------------------------------
 
-type WebmapLinks = { title: string; sections: Record<string, string[]> };
 type NavNode = { label: string; target?: string; children: NavNode[] };
 
-function WebmapView({
+function RootNode({
   origin,
-  startTitle,
+  mainpage,
 }: {
   origin: string;
-  startTitle: string;
+  mainpage: string;
 }) {
   const [nav, setNav] = useState<NavNode[] | null>(null);
-  const [navLoading, setNavLoading] = useState(false);
   const [navError, setNavError] = useState<string>("");
-  const [found, setFound] = useState<boolean>(true);
-
-  const loadNav = useCallback(async () => {
-    if (!origin) return;
-    setNavLoading(true);
-    setNavError("");
-    try {
-      const r = await fetch(
-        `/api/profile/nav?origin=${encodeURIComponent(origin)}`
-      );
-      const j = await safeJson(r);
-      if (!r.ok) {
-        setNavError(j.error || `HTTP ${r.status}`);
-      } else {
-        setNav(j.tree || []);
-        setFound(!!j.found);
-      }
-    } catch (e: any) {
-      setNavError(e?.message || "failed");
-    } finally {
-      setNavLoading(false);
-    }
-  }, [origin]);
 
   useEffect(() => {
-    loadNav();
-  }, [loadNav]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(
+          `/api/profile/nav?origin=${encodeURIComponent(origin)}`
+        );
+        const j = await safeJson(r);
+        if (cancelled) return;
+        if (!r.ok) setNavError(j.error || `HTTP ${r.status}`);
+        else setNav(j.tree || []);
+      } catch (e: any) {
+        if (!cancelled) setNavError(e?.message || "failed");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [origin]);
 
   return (
     <div>
-      <div className="tlabel" style={{ marginBottom: 6 }}>
-        Source: <code>MediaWiki:Wiki-navigation</code> — the curated top-navbar
-        menu. Click ▶ on any link to see that page's outbound links too.
+      <div
+        style={{
+          fontSize: 13,
+          fontWeight: 700,
+          color: "#2a2a3f",
+          marginBottom: 6,
+        }}
+      >
+        <a
+          href={`${origin}/wiki/${encodeURIComponent(
+            mainpage.replace(/ /g, "_")
+          )}`}
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: "#2a2a3f", textDecoration: "none" }}
+        >
+          🏠 {mainpage}
+        </a>
       </div>
-
-      {navLoading && !nav && <div className="tlabel">Loading nav…</div>}
+      {!nav && !navError && <div className="tlabel">Loading sitemap…</div>}
       {navError && (
         <div className="tlabel" style={{ color: "#a04a18" }}>
           {navError}
         </div>
       )}
-      {nav && !found && (
-        <div className="tlabel">
-          This wiki has no <code>MediaWiki:Wiki-navigation</code> page. Falling
-          back to the Main Page below.
-        </div>
-      )}
-      {nav && nav.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
+      {nav && (
+        <div>
           {nav.map((n, i) => (
-            <NavNodeView key={i} node={n} origin={origin} level={0} />
+            <MenuNode key={i} node={n} origin={origin} level={0} />
           ))}
         </div>
       )}
-
-      {/* Always expose the Main Page as a second root so you can walk into
-          the body content even when the nav menu is the primary entry. */}
-      <div
-        style={{
-          borderTop: "1px solid #e2e4ec",
-          marginTop: 10,
-          paddingTop: 8,
-        }}
-      >
-        <div
-          className="tlabel"
-          style={{ marginBottom: 4, fontWeight: 600, color: "#5c54e8" }}
-        >
-          Main Page body
-        </div>
-        <WebmapNode
-          key={startTitle}
-          origin={origin}
-          title={startTitle}
-          level={0}
-        />
-      </div>
     </div>
   );
 }
 
-function NavNodeView({
+// ---------------------------------------------------------------------------
+// Menu node: either a pure menu header (no target) or a menu link. When it
+// has a target, expanding it reveals:
+//   1. Any nested menu items the editors defined.
+//   2. The target page's table of contents (for article pages)
+//      OR its subcategories + members (for Category: pages).
+// ---------------------------------------------------------------------------
+
+function MenuNode({
   node,
   origin,
   level,
@@ -300,9 +193,10 @@ function NavNodeView({
   level: number;
 }) {
   const [open, setOpen] = useState(level < 1);
-  const hasKids = node.children.length > 0;
-  const hasTarget = !!node.target && !/^https?:/i.test(node.target);
-  const expandable = hasKids || hasTarget;
+  const hasMenuKids = node.children.length > 0;
+  const hasTarget =
+    !!node.target && !/^https?:/i.test(node.target);
+  const expandable = hasMenuKids || hasTarget;
 
   return (
     <div style={{ marginLeft: level === 0 ? 0 : 14 }}>
@@ -359,11 +253,6 @@ function NavNodeView({
             {node.label}
           </span>
         )}
-        {node.target && node.label !== node.target && (
-          <span className="tlabel" style={{ fontSize: 10 }}>
-            → {node.target}
-          </span>
-        )}
       </div>
       {open && (
         <div
@@ -373,18 +262,16 @@ function NavNodeView({
             paddingLeft: 4,
           }}
         >
-          {/* 1. Menu children curated in MediaWiki:Wiki-navigation */}
+          {/* Editor-curated submenu */}
           {node.children.map((c, i) => (
-            <NavNodeView key={i} node={c} origin={origin} level={level + 1} />
+            <MenuNode key={i} node={c} origin={origin} level={level + 1} />
           ))}
-          {/* 2. Actual content list: sections + outbound links of the target page */}
+          {/* Page content: TOC for articles, members for categories. */}
           {hasTarget && (
-            <WebmapNode
+            <PageContents
               origin={origin}
               title={node.target!}
               level={level + 1}
-              defaultOpen
-              hideSelf
             />
           )}
         </div>
@@ -393,170 +280,234 @@ function NavNodeView({
   );
 }
 
-function WebmapNode({
+// ---------------------------------------------------------------------------
+// PageContents: for article pages → table of contents (nested).
+//               for Category: pages → subcategories + member pages.
+// ---------------------------------------------------------------------------
+
+type TocNode = {
+  number: string;
+  label: string;
+  anchor: string;
+  level: number;
+  children: TocNode[];
+};
+
+function PageContents({
   origin,
   title,
   level,
-  defaultOpen = false,
-  hideSelf = false,
 }: {
   origin: string;
   title: string;
   level: number;
-  defaultOpen?: boolean;
-  hideSelf?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [data, setData] = useState<WebmapLinks | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>("");
-  const loadedRef = useRef(false);
-
   const isCategory = /^Category:/i.test(title);
-
-  const load = useCallback(async () => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
-    setLoading(true);
-    setError("");
-    try {
-      const url = isCategory
-        ? `/api/profile/catmembers?origin=${encodeURIComponent(
-            origin
-          )}&title=${encodeURIComponent(title)}&limit=200`
-        : `/api/profile/links?origin=${encodeURIComponent(
-            origin
-          )}&title=${encodeURIComponent(title)}&limit=120`;
-      const r = await fetch(url);
-      const j = await safeJson(r);
-      if (!r.ok) {
-        setError(j.error || `HTTP ${r.status}`);
-      } else {
-        setData({ title: j.title, sections: j.sections || {} });
-      }
-    } catch (e: any) {
-      setError(e?.message || "failed");
-    } finally {
-      setLoading(false);
-    }
-  }, [origin, title, isCategory]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
+  // For articles:
+  const [toc, setToc] = useState<TocNode[] | null>(null);
+  // For categories:
+  const [subcats, setSubcats] = useState<string[] | null>(null);
+  const [pages, setPages] = useState<string[] | null>(null);
 
   useEffect(() => {
-    if ((open || hideSelf) && !loadedRef.current) load();
-  }, [open, hideSelf, load]);
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        if (isCategory) {
+          const r = await fetch(
+            `/api/profile/catmembers?origin=${encodeURIComponent(
+              origin
+            )}&title=${encodeURIComponent(title)}&limit=500`
+          );
+          const j = await safeJson(r);
+          if (cancelled) return;
+          if (!r.ok) setError(j.error || `HTTP ${r.status}`);
+          else {
+            setSubcats(j.sections?.Subcategories || []);
+            setPages(j.sections?.Pages || []);
+          }
+        } else {
+          const r = await fetch(
+            `/api/profile/sections?origin=${encodeURIComponent(
+              origin
+            )}&title=${encodeURIComponent(title)}`
+          );
+          const j = await safeJson(r);
+          if (cancelled) return;
+          if (!r.ok) setError(j.error || `HTTP ${r.status}`);
+          else setToc(j.tree || []);
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || "failed");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [origin, title, isCategory]);
 
-  const sectionKeys = data ? Object.keys(data.sections) : [];
-  const totalLinks = data
-    ? sectionKeys.reduce((n, k) => n + data.sections[k].length, 0)
-    : 0;
+  if (loading) return <div className="tlabel" style={{ marginLeft: 14 }}>Loading…</div>;
+  if (error)
+    return (
+      <div className="tlabel" style={{ marginLeft: 14, color: "#a04a18" }}>
+        {error}
+      </div>
+    );
 
-  return (
-    <div style={{ marginLeft: level === 0 || hideSelf ? 0 : 14 }}>
-      {!hideSelf && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "2px 0",
-          }}
-        >
-          <span
-            onClick={() => setOpen((v) => !v)}
-            style={{
-              cursor: "pointer",
-              fontSize: 10,
-              color: "#5c54e8",
-              width: 12,
-              userSelect: "none",
-            }}
-            title={open ? "Collapse" : "Expand"}
-          >
-            {open ? "▼" : "▶"}
-          </span>
-          <a
-            href={`${origin}/wiki/${encodeURIComponent(
-              title.replace(/ /g, "_")
-            )}`}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              fontSize: 12,
-              color: level === 0 ? "#2a2a3f" : "#3a3a55",
-              fontWeight: level === 0 ? 600 : 400,
-              textDecoration: "none",
-            }}
-          >
-            {title}
-          </a>
-          {loading && <span className="tlabel">loading…</span>}
-          {data && (
-            <span className="tlabel">
-              · {totalLinks} {isCategory ? "members" : "links"}
-              {sectionKeys.length > 1 ? ` · ${sectionKeys.length} sections` : ""}
-            </span>
-          )}
-          {error && (
-            <span className="tlabel" style={{ color: "#a04a18" }}>
-              · {error}
-            </span>
-          )}
-        </div>
-      )}
-      {open && (
-        <div
-          style={{
-            borderLeft: "1px solid #eceef4",
-            marginLeft: 6,
-            paddingLeft: 4,
-          }}
-        >
-          {hideSelf && loading && (
-            <div className="tlabel" style={{ marginLeft: 14 }}>
-              loading…
-            </div>
-          )}
-          {hideSelf && error && (
+  if (isCategory) {
+    const hasAny = (subcats?.length || 0) + (pages?.length || 0) > 0;
+    if (!hasAny)
+      return <div className="tlabel" style={{ marginLeft: 14 }}>Empty category.</div>;
+    return (
+      <div>
+        {subcats && subcats.length > 0 && (
+          <div style={{ marginTop: 4 }}>
             <div
-              className="tlabel"
-              style={{ marginLeft: 14, color: "#a04a18" }}
+              style={{
+                fontSize: 10,
+                color: "#5c54e8",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: ".05em",
+                marginLeft: 14,
+              }}
             >
-              {error}
+              Subcategories
             </div>
-          )}
-          {data && sectionKeys.length === 0 && (
-            <div className="tlabel" style={{ marginLeft: 14 }}>
-              No outbound links.
-            </div>
-          )}
-          {data &&
-            sectionKeys.map((s) => (
-              <div key={s} style={{ marginTop: s ? 6 : 0 }}>
-                {s && (
-                  <div
-                    style={{
-                      fontSize: 10,
-                      color: "#5c54e8",
-                      fontWeight: 600,
-                      textTransform: "uppercase",
-                      letterSpacing: ".05em",
-                      marginLeft: 14,
-                      marginBottom: 2,
-                    }}
-                  >
-                    {s}
-                  </div>
-                )}
-                {data.sections[s].map((t) => (
-                  <WebmapNode
-                    key={`${s}::${t}`}
-                    origin={origin}
-                    title={t}
-                    level={level + 1}
-                  />
-                ))}
-              </div>
+            {subcats.map((t) => (
+              <MenuNode
+                key={t}
+                node={{ label: t.replace(/^Category:/, ""), target: t, children: [] }}
+                origin={origin}
+                level={level}
+              />
             ))}
+          </div>
+        )}
+        {pages && pages.length > 0 && (
+          <div style={{ marginTop: 4 }}>
+            <div
+              style={{
+                fontSize: 10,
+                color: "#5c54e8",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: ".05em",
+                marginLeft: 14,
+              }}
+            >
+              Pages
+            </div>
+            {pages.map((t) => (
+              <MenuNode
+                key={t}
+                node={{ label: t, target: t, children: [] }}
+                origin={origin}
+                level={level}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Article: table of contents
+  if (!toc || toc.length === 0) {
+    return (
+      <div className="tlabel" style={{ marginLeft: 14 }}>
+        No table of contents.
+      </div>
+    );
+  }
+  return (
+    <div>
+      {toc.map((n, i) => (
+        <TocItem
+          key={i}
+          node={n}
+          origin={origin}
+          page={title}
+          level={level}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TocItem({
+  node,
+  origin,
+  page,
+  level,
+}: {
+  node: TocNode;
+  origin: string;
+  page: string;
+  level: number;
+}) {
+  const [open, setOpen] = useState(true);
+  const hasKids = node.children.length > 0;
+  return (
+    <div style={{ marginLeft: 14 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "1px 0",
+        }}
+      >
+        <span
+          onClick={() => hasKids && setOpen((v) => !v)}
+          style={{
+            cursor: hasKids ? "pointer" : "default",
+            fontSize: 10,
+            color: "#aaa",
+            width: 12,
+            userSelect: "none",
+          }}
+        >
+          {hasKids ? (open ? "▼" : "▶") : "·"}
+        </span>
+        <span
+          className="tlabel"
+          style={{ fontSize: 10, minWidth: 28, color: "#888" }}
+        >
+          {node.number}
+        </span>
+        <a
+          href={`${origin}/wiki/${encodeURIComponent(
+            page.replace(/ /g, "_")
+          )}#${encodeURIComponent(node.anchor)}`}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            fontSize: 12,
+            color: "#3a3a55",
+            textDecoration: "none",
+          }}
+        >
+          {node.label}
+        </a>
+      </div>
+      {open && hasKids && (
+        <div>
+          {node.children.map((c, i) => (
+            <TocItem
+              key={i}
+              node={c}
+              origin={origin}
+              page={page}
+              level={level + 1}
+            />
+          ))}
         </div>
       )}
     </div>
