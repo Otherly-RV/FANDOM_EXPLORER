@@ -541,15 +541,17 @@ export default function Explorer() {
         <button className="tbtn" onClick={openProjects}>📁 Projects</button>
       </div>
       <div id="progress" style={{ width: progressRef.current + "%" }} />
-      {viewMode === "canon" ? (
-        <div id="main">
-          <div style={{ flex: 1, overflow: "hidden" }}>
-            <ProfilerPanel urlIn={urlIn} />
-          </div>
-        </div>
-      ) : (
       <div id="main">
-        <div id="left">
+        <div
+          style={{
+            flex: 1,
+            overflow: "hidden",
+            display: viewMode === "canon" ? "block" : "none",
+          }}
+        >
+          <ProfilerPanel urlIn={urlIn} />
+        </div>
+        <div id="left" style={{ display: viewMode === "canon" ? "none" : undefined }}>
           <div id="left-hdr">
             <span>{viewMode === "network" ? "Hyperlink Network" : "Hyperlink Tree"} — {nodes.length} nodes</span>
             <div id="legend">
@@ -567,7 +569,7 @@ export default function Explorer() {
             {roots.map((r) => <TreeNode key={r.url} n={r} />)}
           </div>
         </div>
-        <div id="right">
+        <div id="right" style={{ display: viewMode === "canon" ? "none" : undefined }}>
           <div id="right-hdr">
             All pages: <b>{nodes.length}</b>&nbsp;·&nbsp;Links: <b>{edgesRef.current.length}</b>&nbsp;·&nbsp;Queue: <b>{queueRef.current.length}</b>
           </div>
@@ -581,7 +583,6 @@ export default function Explorer() {
           </div>
         </div>
       </div>
-      )}
       <div id="statusbar"><span>{status}</span><span /></div>
 
       <div id="proj-modal" className={projModal ? "open" : ""}>
