@@ -3,6 +3,7 @@
 // persists snapshots via /api/projects (Neon, server-side only).
 import { useEffect, useRef, useState } from "react";
 import ProfilerPanel from "./profiler-panel";
+import CanonPanel from "./canon-panel";
 
 type Section = { heading: string; level: number; anchor: string };
 type LLMProvider = "claude" | "gemini" | "none";
@@ -55,7 +56,7 @@ export default function Explorer() {
   const [urlIn, setUrlIn] = useState("https://harrypotter.fandom.com/wiki/Harry_Potter");
   const [maxP, setMaxP] = useState(25);
   const [crawling, setCrawling] = useState(false);
-  const [viewMode, setViewMode] = useState<"network" | "tree" | "canon">("network");
+  const [viewMode, setViewMode] = useState<"network" | "tree" | "canon" | "canon-analysis">("network");
   const [allExpanded, setAllExpanded] = useState(false);
   const [status, setStatus] = useState("Ready — enter a Fandom URL and click Crawl.");
   const [provider, setProvider] = useState<LLMProvider>("none");
@@ -542,7 +543,10 @@ export default function Explorer() {
         <button className={`tbtn${viewMode === "canon" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon" ? "network" : "canon")} title="Hypertext webmap of the wiki">
           {viewMode === "canon" ? "Show Crawl" : "Webmap"}
         </button>
-        <button className={`tbtn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")} disabled={viewMode === "canon"}>
+        <button className={`tbtn${viewMode === "canon-analysis" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "canon-analysis" ? "network" : "canon-analysis")} title="LLM explanation of how this IP organizes its canon">
+          {viewMode === "canon-analysis" ? "Show Crawl" : "Canon Logic"}
+        </button>
+        <button className={`tbtn${viewMode === "tree" ? " active" : ""}`} onClick={() => setViewMode(viewMode === "network" ? "tree" : "network")} disabled={viewMode === "canon" || viewMode === "canon-analysis"}>
           {viewMode === "network" ? "Show Tree" : "Show Network"}
         </button>
         <button className="tbtn" onClick={() => setAllExpanded((v) => !v)}>{allExpanded ? "Collapse All" : "Expand All"}</button>
@@ -560,7 +564,16 @@ export default function Explorer() {
         >
           <ProfilerPanel urlIn={urlIn} />
         </div>
-        <div id="left" style={{ display: viewMode === "canon" ? "none" : undefined }}>
+        <div
+          style={{
+            flex: 1,
+            overflow: "hidden",
+            display: viewMode === "canon-analysis" ? "block" : "none",
+          }}
+        >
+          <CanonPanel urlIn={urlIn} />
+        </div>
+        <div id="left" style={{ display: viewMode === "canon" || viewMode === "canon-analysis" ? "none" : undefined }}>
           <div id="left-hdr">
             <span>{viewMode === "network" ? "Hyperlink Network" : "Hyperlink Tree"} — {nodes.length} nodes</span>
             <div id="legend">
@@ -578,7 +591,7 @@ export default function Explorer() {
             {roots.map((r) => <TreeNode key={r.url} n={r} />)}
           </div>
         </div>
-        <div id="right" style={{ display: viewMode === "canon" ? "none" : undefined }}>
+        <div id="right" style={{ display: viewMode === "canon" || viewMode === "canon-analysis" ? "none" : undefined }}>
           <div id="right-hdr">
             All pages: <b>{nodes.length}</b>&nbsp;·&nbsp;Links: <b>{edgesRef.current.length}</b>&nbsp;·&nbsp;Queue: <b>{queueRef.current.length}</b>
           </div>
