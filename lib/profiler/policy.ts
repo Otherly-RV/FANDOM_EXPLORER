@@ -4,7 +4,7 @@
 //   1. Categories that look like canon/legends/continuity buckets.
 //   2. Dedicated policy pages (Help:Canon, Canon, Canonicity).
 //   3. Main Page / site nav hints (separate-wiki mentions).
-import { categoryMembers, mwGet, parsePage, siteInfo } from "@/lib/mw";
+import { allCategoriesBySize, categoryMembers, mwGet, parsePage, siteInfo } from "@/lib/mw";
 
 export type CanonPolicy = {
   mode: "category-split" | "separate-wiki" | "infobox-field" | "none";
@@ -119,30 +119,60 @@ export async function detectCanonPolicy(origin: string): Promise<CanonPolicy> {
 }
 
 // Pick sensible root categories to seed BFS from.
-// Order of preference: Browse, Contents, Main topic classifications,
-// then whatever we discovered during policy detection.
+// Strategy:
+//   1. Probe the English-Wikipedia-convention meta categories (Browse, …)
+//      which SOME Fandom wikis use.
+//   2. Regardless, enumerate the wiki's largest real categories via
+//      list=allcategories&acprop=size. These ARE the organizational
+//      structure on wikis that don't bother with Browse/Contents.
+//   3. Keep anything discovered by the canon-policy probe.
+// De-duplicated, convention roots first, then by size desc.
 export async function discoverRootCategories(
   origin: string,
-  policy: CanonPolicy
+  policy: CanonPolicy,
+  opts: { topN?: number; minPages?: number } = {}
 ): Promise<string[]> {
-  const candidates = [
+  const topN = opts.topN ?? 40;
+  const minPages = opts.minPages ?? 3;
+
+  const conventionCandidates = [
     "Browse",
     "Contents",
     "Main topic classifications",
     "Articles",
   ];
-  const roots: string[] = [];
-  for (const c of candidates) {
-    const members = await categoryMembers(
-      origin,
-      c,
-      "page|subcat",
-      1 /* just probe existence */
-    );
-    if (members.length > 0) roots.push(c);
+  const conventionRoots: string[] = [];
+  await Promise.all(
+    conventionCandidates.map(async (c) => {
+      try {
+        const members = await categoryMembers(
+          origin,
+          c,
+          "page|subcat",
+          2 /* probe existence, require >1 to avoid empty stubs */
+        );
+        if (members.length > 1) conventionRoots.push(c);
+      } catch {
+        /* ignore */
+      }
+    })
+  );
+
+  // Enumerate real categories by size.
+  let bySize: { name: string; pages: number }[] = [];
+  try {
+    const all = await allCategoriesBySize(origin, { minPages });
+    bySize = all.slice(0, topN).map((c) => ({ name: c.name, pages: c.pages }));
+  } catch {
+    /* ignore — fall back to convention roots */
   }
+
+  const roots: string[] = [];
+  for (const r of conventionRoots) roots.push(r);
+  for (const c of bySize) roots.push(c.name);
   if (policy.canonCategory) roots.push(policy.canonCategory);
   if (policy.nonCanonCategory) roots.push(policy.nonCanonCategory);
-  // De-dupe, preserve order.
+
+  // De-dupe, preserve order (convention → by-size → canon-policy).
   return [...new Set(roots)];
 }

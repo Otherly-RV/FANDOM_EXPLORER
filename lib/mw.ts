@@ -131,6 +131,50 @@ export async function categoryMembers(
   );
 }
 
+// ---------- all categories, with size ----------
+// Enumerate every category on the wiki together with its page/subcat counts.
+// Sorted client-side by `pages` desc. Useful to discover the REAL
+// organizational roots (not the English conventions Browse/Contents).
+export type CategorySize = {
+  name: string;
+  pages: number;
+  files: number;
+  subcats: number;
+  size: number;
+};
+export async function allCategoriesBySize(
+  origin: string,
+  opts: { maxCategories?: number; minPages?: number } = {}
+): Promise<CategorySize[]> {
+  const max = opts.maxCategories ?? 8000;
+  const minPages = opts.minPages ?? 1;
+  const rows = await mwQueryAll<any>(
+    origin,
+    {
+      action: "query",
+      list: "allcategories",
+      aclimit: 500,
+      acprop: "size",
+    },
+    (j) => j.query?.allcategories ?? [],
+    { max }
+  );
+  const out: CategorySize[] = [];
+  for (const r of rows) {
+    const pages = Number(r.pages) || 0;
+    if (pages < minPages) continue;
+    out.push({
+      name: String(r.category ?? r["*"] ?? "").replace(/_/g, " "),
+      pages,
+      files: Number(r.files) || 0,
+      subcats: Number(r.subcats) || 0,
+      size: Number(r.size) || pages,
+    });
+  }
+  out.sort((a, b) => b.pages - a.pages);
+  return out;
+}
+
 // ---------- page categories (batched) ----------
 export type PageCats = { title: string; categories: string[] };
 export async function pageCategoriesBatch(
