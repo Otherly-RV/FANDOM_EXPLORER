@@ -4,7 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { neon } from "@neondatabase/serverless";
+import { Client } from "@neondatabase/serverless";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,13 +27,15 @@ async function run(req: NextRequest) {
       { error: "DATABASE_URL not set" },
       { status: 500 }
     );
-  const db = neon(dbUrl);
+  const client = new Client(dbUrl);
+  await client.connect();
 
   // Read schema.sql at request time.
   let schema: string;
   try {
     schema = readFileSync(join(process.cwd(), "lib", "schema.sql"), "utf8");
   } catch (e: any) {
+    await client.end();
     return NextResponse.json(
       { error: `cannot read schema.sql: ${e.message}` },
       { status: 500 }
@@ -54,13 +56,13 @@ async function run(req: NextRequest) {
   const errors: { stmt: string; error: string }[] = [];
   for (const s of stmts) {
     try {
-      // neon's raw query method.
-      await (db as any).query(s);
+      await client.query(s);
       applied.push(s.split("\n")[0].slice(0, 80));
     } catch (e: any) {
       errors.push({ stmt: s.split("\n")[0].slice(0, 80), error: String(e.message || e) });
     }
   }
+  await client.end();
 
   return NextResponse.json({
     ok: errors.length === 0,
