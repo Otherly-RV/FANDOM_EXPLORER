@@ -34,8 +34,8 @@ export async function GET(req: NextRequest) {
   }
 
   // Iteratively expand. Each level: fetch children of the current frontier.
-  type Node = { name: string; children: Node[] };
-  const rootNode: Node = { name: root, children: [] };
+  type Node = { name: string; pageCount: number; children: Node[] };
+  const rootNode: Node = { name: root, pageCount: 0, children: [] };
   const byName = new Map<string, Node>([[root, rootNode]]);
   let frontier: string[] = [root];
 
@@ -50,13 +50,35 @@ export async function GET(req: NextRequest) {
       const parent = byName.get(r.parent);
       if (!parent) continue;
       if (byName.has(r.category)) continue; // cycle guard
-      const node: Node = { name: r.category, children: [] };
+      const node: Node = { name: r.category, pageCount: 0, children: [] };
       parent.children.push(node);
       byName.set(r.category, node);
       nextFrontier.push(r.category);
     }
     frontier = nextFrontier;
   }
+
+  // Page counts per category (direct members only).
+  const names = [...byName.keys()];
+  if (names.length) {
+    const counts = (await sql`
+      SELECT category, COUNT(*)::int AS c
+      FROM wiki_pages
+      WHERE origin = ${origin} AND category = ANY(${names}::text[])
+      GROUP BY category
+    `) as any[];
+    for (const row of counts) {
+      const n = byName.get(row.category);
+      if (n) n.pageCount = row.c;
+    }
+  }
+
+  // Sort children by page count desc for readability.
+  function sortRec(n: Node) {
+    n.children.sort((a, b) => b.pageCount - a.pageCount);
+    n.children.forEach(sortRec);
+  }
+  sortRec(rootNode);
 
   return NextResponse.json({ origin, root, depth, tree: rootNode });
 }

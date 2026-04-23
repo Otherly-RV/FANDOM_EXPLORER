@@ -41,7 +41,7 @@ type Job = {
 
 type Hubs = { hubs: Record<string, Record<string, string[]>>; count: number };
 
-type TreeNode = { name: string; children: TreeNode[] };
+type TreeNode = { name: string; pageCount: number; children: TreeNode[] };
 
 type ClassifyRecord = {
   title: string;
@@ -112,6 +112,22 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     setTree(null);
     setClassify(null);
   }, [loadProfile]);
+
+  // Auto-load tree + hubs when a profile becomes available.
+  useEffect(() => {
+    if (!profile) return;
+    if (!tree && profile.root_cats.length) {
+      // Prefer a root that isn't the generic "Browse" or "Articles" if a
+      // better one exists; otherwise fall back to the first.
+      const preferred =
+        profile.root_cats.find(
+          (r) => !/^(browse|articles|contents|content)$/i.test(r)
+        ) || profile.root_cats[0];
+      loadTree(preferred);
+    }
+    if (!hubs) loadHubs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
 
   // Polling for an in-progress job.
   const startPolling = useCallback(
@@ -203,7 +219,7 @@ export default function ProfilerPanel({ urlIn }: { urlIn: string }) {
     setTreeRoot(root);
     try {
       const r = await fetch(
-        `/api/profile/tree?origin=${encodeURIComponent(origin)}&root=${encodeURIComponent(root)}&depth=3`
+        `/api/profile/tree?origin=${encodeURIComponent(origin)}&root=${encodeURIComponent(root)}&depth=4`
       );
       const j = await r.json();
       if (r.ok) setTree(j.tree);
@@ -670,8 +686,11 @@ function TreeItem({
         >
           {node.name}
         </a>
+        {node.pageCount > 0 && (
+          <span className="tlabel">· {node.pageCount} pages</span>
+        )}
         {hasKids && (
-          <span className="tlabel">({node.children.length})</span>
+          <span className="tlabel">· {node.children.length} subcats</span>
         )}
       </div>
       {open && hasKids && (
