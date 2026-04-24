@@ -92,10 +92,13 @@ export default function CanonPanel({
   const [showThinking, setShowThinking] = useState<boolean>(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [snapshots, setSnapshots] = useState<Array<{ id: string; name: string; origin: string; sitename?: string; articles?: number; created_at: string; group_count: number }>>([]);
+  const [autosaveId, setAutosaveId] = useState<string | null>(null);
+  const autosaveIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Use a ref mirror for mutating groups during stream to avoid stale state.
   const groupsRef = useRef<Group[]>([]);
+  const explanationRef = useRef<string>("");
 
   const upsertGroup = useCallback((updater: (prev: Group[]) => Group[]) => {
     groupsRef.current = updater(groupsRef.current);
@@ -154,7 +157,26 @@ export default function CanonPanel({
     if (!origin || !groups.length) return;
     setSaveState("saving");
     try {
-      const r = await fetch("/api/canon/snapshots", {
+      // If an autosave is already running, just refresh its metadata.
+      if (autosaveIdRef.current) {
+        await fetch(`/api/canon/snapshots/${autosaveIdRef.current}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            groups: groupsRef.current.map((g) => {
+              const { pages: _p, ...rest } = g as any;
+              return rest;
+            }),
+            explanation,
+          }),
+        });
+        setSaveState("saved");
+        refreshSnapshots();
+        setTimeout(() => setSaveState("idle"), 2000);
+        return;
+      }
+      // Otherwise create a fresh snapshot shell AND upload pages.
+      const createResp = await fetch("/api/canon/snapshots", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -162,11 +184,31 @@ export default function CanonPanel({
           origin,
           sitename: meta?.sitename,
           articles: meta?.articles,
-          groups,
+          groups: groups.map((g) => {
+            const { pages: _p, ...rest } = g as any;
+            return rest;
+          }),
           explanation,
         }),
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!createResp.ok) throw new Error(`HTTP ${createResp.status}`);
+      const { id } = await createResp.json();
+      autosaveIdRef.current = id;
+      setAutosaveId(id);
+      // Upload pages in batches of 20 so each request stays small.
+      for (const g of groups) {
+        for (let i = 0; i < g.pages.length; i += 20) {
+          const batch = g.pages.slice(i, i + 20).map((p) => ({
+            gid: g.gid, title: p.title, url: p.url,
+            template: p.template, fields: p.fields, lead: p.lead, sections: p.sections,
+          }));
+          await fetch(`/api/canon/snapshots/${id}/pages`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ pages: batch }),
+          });
+        }
+      }
       setSaveState("saved");
       refreshSnapshots();
       setTimeout(() => setSaveState("idle"), 2000);
@@ -220,8 +262,11 @@ export default function CanonPanel({
     setProgress([]);
     setThinking("");
     setExplanation("");
+    explanationRef.current = "";
     groupsRef.current = [];
     setGroups([]);
+    autosaveIdRef.current = null;
+    setAutosaveId(null);
     const opt = MODEL_OPTIONS.find((m) => m.id === modelId)!;
     const ctl = new AbortController();
     abortRef.current = ctl;
@@ -283,6 +328,37 @@ export default function CanonPanel({
       const totalTitles = invGroups.reduce((n, g) => n + g.allTitles.length, 0);
       setProgress((p) => [...p, `inventory done · ${invGroups.length} categories · ${totalTitles} pages to load`]);
 
+      // ---------- AUTOSAVE: create snapshot shell now so we persist as we go ----------
+      let snapId: string | null = null;
+      try {
+        const metaNow = meta;
+        const createResp = await fetch("/api/canon/snapshots", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: `${metaNow?.sitename || origin} — ${new Date().toLocaleString()}`,
+            origin,
+            sitename: metaNow?.sitename,
+            articles: metaNow?.articles,
+            groups: invGroups.map((g) => ({
+              gid: g.gid, category: g.category, totalMembers: g.totalMembers,
+              sampled: g.sampled, allTitles: g.allTitles,
+            })),
+            explanation: "",
+          }),
+          signal: ctl.signal,
+        });
+        if (createResp.ok) {
+          const j = await createResp.json();
+          snapId = j.id || null;
+          autosaveIdRef.current = snapId;
+          setAutosaveId(snapId);
+          if (snapId) setProgress((p) => [...p, `autosave started · ${snapId}`]);
+        }
+      } catch {
+        // Autosave failure is non-fatal — user still has the live scan in memory.
+      }
+
       // ---------- STAGE 2: fetch page content in chunks ----------
       // Use a single shared queue across all groups so concurrency is global
       // and progress feels smooth. Each request asks for 20 titles.
@@ -313,27 +389,35 @@ export default function CanonPanel({
             if (!resp.ok) continue;
             const js = await resp.json();
             const pages: any[] = js.pages || [];
+            const merged = pages.map((p) => ({
+              gid: task.gid,
+              title: p.title,
+              url: p.url,
+              template: p.template,
+              fields: p.fields || [],
+              lead: p.lead || "",
+              sections: p.sections || [],
+            }));
             upsertGroup((prev) => prev.map((g) => {
               if (g.gid !== task.gid) return g;
-              const merged = pages.map((p) => ({
-                gid: task.gid,
-                title: p.title,
-                url: p.url,
-                template: p.template,
-                fields: p.fields || [],
-                lead: p.lead || "",
-                sections: p.sections || [],
-              }));
               return {
                 ...g,
                 pages: [...g.pages, ...merged],
                 fetched: g.fetched + merged.length,
               };
             }));
+            // Fire-and-forget autosave of this batch.
+            if (snapId && merged.length) {
+              fetch(`/api/canon/snapshots/${snapId}/pages`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ pages: merged }),
+              }).catch(() => { /* autosave errors ignored */ });
+            }
             totalFetched += pages.length;
             setProgress((p) => {
               const last = p[p.length - 1];
-              const msg = `fetching content… ${totalFetched}/${totalTitles}`;
+              const msg = `fetching content… ${totalFetched}/${totalTitles}${snapId ? " · autosaving" : ""}`;
               if (last && last.startsWith("fetching content…")) return [...p.slice(0, -1), msg];
               return [...p, msg];
             });
@@ -373,8 +457,36 @@ export default function CanonPanel({
         };
       }));
 
+      // Persist classification metadata.
+      if (snapId) {
+        try {
+          await fetch(`/api/canon/snapshots/${snapId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              groups: groupsRef.current.map((g) => {
+                const { pages: _p, ...rest } = g as any;
+                return rest;
+              }),
+            }),
+          });
+        } catch { /* ignore */ }
+      }
+
       // ---------- STAGE 3: meta narrative ----------
       await runNarrative(opt, ctl.signal);
+
+      // Persist explanation.
+      if (snapId) {
+        try {
+          await fetch(`/api/canon/snapshots/${snapId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ explanation: explanationRef.current }),
+          });
+          refreshSnapshots();
+        } catch { /* ignore */ }
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(e?.message || "failed");
     } finally {
@@ -436,7 +548,11 @@ export default function CanonPanel({
         const ev = parseSSE(raw);
         if (!ev) continue;
         if (ev.event === "thinking") setThinking((t) => t + String(ev.data?.text || ""));
-        else if (ev.event === "explanation") setExplanation(String(ev.data?.text || ""));
+        else if (ev.event === "explanation") {
+          const txt = String(ev.data?.text || "");
+          explanationRef.current = txt;
+          setExplanation(txt);
+        }
         else if (ev.event === "error") setError(String(ev.data?.error || "narrative error"));
       }
     }
@@ -488,6 +604,16 @@ export default function CanonPanel({
           <div style={{ fontWeight: 700, fontSize: 13, color: "#2a2a3f" }}>
             Canon inventory
           </div>
+          {autosaveId && (
+            <span
+              title={`Auto-saving to snapshot ${autosaveId}`}
+              style={{
+                fontSize: 10, fontWeight: 600, color: "#1e8a4a",
+                background: "#e6f7ec", padding: "2px 6px", borderRadius: 4,
+                border: "1px solid #b7e0c3",
+              }}
+            >● autosaving</span>
+          )}
           <select
             value={modelId}
             onChange={(e) => setModelId(e.target.value)}

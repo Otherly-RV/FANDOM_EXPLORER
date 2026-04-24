@@ -45,6 +45,10 @@ CREATE INDEX IF NOT EXISTS idx_edges_project ON edges(project_id);
 
 -- =========================================================================
 -- Canon snapshots: saved Canon inventory scans.
+-- Pages live in canon_pages (one row per page) so progressive autosave
+-- can append without rewriting the big JSON blob.
+-- groups_json stores only group *metadata* (category, template, counts,
+-- classification) — the pages array on read is reconstructed from canon_pages.
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS canon_snapshots (
   id          TEXT PRIMARY KEY,
@@ -52,11 +56,26 @@ CREATE TABLE IF NOT EXISTS canon_snapshots (
   origin      TEXT NOT NULL,
   sitename    TEXT,
   articles    INTEGER,
-  groups_json JSONB NOT NULL,        -- [{gid, category, template?, totalMembers, pages: [...]}]
+  groups_json JSONB NOT NULL,
   explanation TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_canon_origin ON canon_snapshots(origin);
+ALTER TABLE canon_snapshots ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+CREATE TABLE IF NOT EXISTS canon_pages (
+  snapshot_id TEXT NOT NULL REFERENCES canon_snapshots(id) ON DELETE CASCADE,
+  gid         INTEGER NOT NULL,
+  title       TEXT NOT NULL,
+  url         TEXT NOT NULL,
+  template    TEXT,
+  fields      JSONB NOT NULL DEFAULT '[]'::jsonb,
+  lead        TEXT NOT NULL DEFAULT '',
+  sections    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  PRIMARY KEY (snapshot_id, gid, title)
+);
+CREATE INDEX IF NOT EXISTS idx_canon_pages_snap ON canon_pages(snapshot_id);
 
 -- =========================================================================
 -- Drop legacy canon-profiler tables if present (superseded by live sitemap).
