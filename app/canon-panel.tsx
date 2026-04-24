@@ -247,6 +247,12 @@ export default function CanonPanel({
         totalCategories: gs.length,
       });
       setExplanation(d.explanation || "");
+      explanationRef.current = d.explanation || "";
+      // Tie this loaded snapshot to the autosave slot so later
+      // regenerate / save / PATCHes update THIS snapshot in place
+      // instead of creating a new one or losing the update.
+      autosaveIdRef.current = d.id || null;
+      setAutosaveId(d.id || null);
       setError("");
       setProgress([`loaded snapshot ${d.name}`]);
     } catch (e: any) {
@@ -570,13 +576,26 @@ export default function CanonPanel({
     abortRef.current = ctl;
     try {
       await runNarrative(undefined, ctl.signal);
+      // Persist the freshly generated explanation so reloading the
+      // snapshot does NOT require regenerating (and burning tokens) again.
+      const snapId = autosaveIdRef.current;
+      if (snapId && explanationRef.current) {
+        try {
+          await fetch(`/api/canon/snapshots/${snapId}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ explanation: explanationRef.current }),
+          });
+          refreshSnapshots();
+        } catch { /* non-fatal */ }
+      }
     } catch (e: any) {
       if (e?.name !== "AbortError") setError(e?.message || "narrative failed");
     } finally {
       setLoading(false);
       abortRef.current = null;
     }
-  }, [runNarrative]);
+  }, [runNarrative, refreshSnapshots]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
