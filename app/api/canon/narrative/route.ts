@@ -94,16 +94,33 @@ export async function POST(req: NextRequest) {
       };
       try {
         const user = buildUserMessage(site, groups);
-        if (provider === "claude") {
-          await streamClaude(model, user, onThinking, onExplanationDelta, onExplanationFinal);
-        } else {
-          await streamGemini(model, user, onThinking, onExplanationDelta, onExplanationFinal);
+        const runOnce = async (m: string) => {
+          if (provider === "claude") {
+            await streamClaude(m, user, onThinking, onExplanationDelta, onExplanationFinal);
+          } else {
+            await streamGemini(m, user, onThinking, onExplanationDelta, onExplanationFinal);
+          }
+        };
+        try {
+          await runOnce(model);
+        } catch (primaryErr: any) {
+          // Auto-fallback: if the preview / requested model fails (404, empty
+          // response, or any error) try a stable fallback from the same
+          // provider before giving up.
+          const fallbacks = MODELS[provider].filter((m) => m !== model);
+          const fb = fallbacks[0];
+          if (fb && explanationChars === 0) {
+            send("thinking", {
+              text: `\n[falling back from ${model} to ${fb} after error: ${String(primaryErr?.message || primaryErr).slice(0, 200)}]\n`,
+            });
+            await runOnce(fb);
+          } else {
+            throw primaryErr;
+          }
         }
         if (explanationChars === 0) {
           send("error", {
             error: "The model finished without producing any explanation text. " +
-              "This usually means the thinking budget consumed the whole response, " +
-              "or the model name is not available on this API key. " +
               `(provider=${provider}, model=${model})`,
           });
         }
@@ -177,7 +194,7 @@ async function streamClaude(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 8000,
+      max_tokens: 16000,
       thinking: { type: "enabled", budget_tokens: 4000 },
       system: SYSTEM,
       stream: true,
@@ -219,15 +236,25 @@ async function streamGemini(
       contents: [{ role: "user", parts: [{ text: user }] }],
       generationConfig: {
         temperature: 0.25,
-        maxOutputTokens: 8000,
-        thinkingConfig: { includeThoughts: true, thinkingBudget: -1 },
+        // NOTE: for Gemini 2.5/3 Pro, maxOutputTokens is the total budget
+        // (thinking + visible). We cap thinking explicitly so the model
+        // cannot spend the whole budget on thoughts and finish empty.
+        maxOutputTokens: 24000,
+        thinkingConfig: { includeThoughts: true, thinkingBudget: 8000 },
       },
     }),
   });
   if (!r.ok || !r.body) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
   let finalText = "";
+  let finishReason = "";
+  let usage: any = null;
+  let promptFeedback: any = null;
   for await (const ev of parseSSE(r.body)) {
-    const parts = ev.data?.candidates?.[0]?.content?.parts;
+    const cand = ev.data?.candidates?.[0];
+    if (cand?.finishReason) finishReason = cand.finishReason;
+    if (ev.data?.usageMetadata) usage = ev.data.usageMetadata;
+    if (ev.data?.promptFeedback) promptFeedback = ev.data.promptFeedback;
+    const parts = cand?.content?.parts;
     if (!Array.isArray(parts)) continue;
     for (const p of parts) {
       if (typeof p?.text !== "string") continue;
@@ -237,6 +264,14 @@ async function streamGemini(
         onExplanationDelta(p.text);
       }
     }
+  }
+  if (!finalText) {
+    const details = [
+      finishReason ? `finishReason=${finishReason}` : "",
+      usage ? `usage=${JSON.stringify(usage)}` : "",
+      promptFeedback ? `promptFeedback=${JSON.stringify(promptFeedback)}` : "",
+    ].filter(Boolean).join(" · ");
+    throw new Error(`Gemini produced no visible text${details ? ` (${details})` : ""}`);
   }
   onExplanationFinal(finalText);
 }
