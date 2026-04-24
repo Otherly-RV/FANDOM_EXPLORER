@@ -2,7 +2,7 @@
 // Append a batch of pages (typically one chunk of ~20) to an existing snapshot.
 // Called repeatedly during a scan so we never POST a giant payload.
 import { NextResponse } from "next/server";
-import { sql } from "@/lib/db";
+import { sql, ensureSchema } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +22,7 @@ type IncomingPage = {
 export async function POST(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   try {
+    await ensureSchema();
     const body = await req.json();
     const pages: IncomingPage[] = Array.isArray(body?.pages) ? body.pages : [];
     if (!pages.length) return NextResponse.json({ ok: true, inserted: 0 });

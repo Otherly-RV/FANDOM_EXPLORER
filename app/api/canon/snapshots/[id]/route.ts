@@ -1,6 +1,6 @@
 // app/api/canon/snapshots/[id]/route.ts
 import { NextResponse } from "next/server";
-import { sql } from "@/lib/db";
+import { sql, ensureSchema } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,6 +10,7 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   try {
+    await ensureSchema();
     const rows = await sql`SELECT * FROM canon_snapshots WHERE id = ${id}` as any[];
     if (!rows.length) return NextResponse.json({ error: "not found" }, { status: 404 });
     const r = rows[0];
@@ -61,6 +62,7 @@ export async function GET(_req: Request, ctx: Ctx) {
 export async function PATCH(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   try {
+    await ensureSchema();
     const body = await req.json();
     const { name, groups, explanation } = body || {};
     if (typeof name === "string") {
@@ -89,6 +91,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
 export async function DELETE(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   try {
+    await ensureSchema();
     await sql`DELETE FROM canon_snapshots WHERE id = ${id}`;
     return NextResponse.json({ ok: true });
   } catch (e: any) {

@@ -2,13 +2,14 @@
 // List + create Canon inventory snapshots.
 // Pages live in canon_pages — POST only creates the metadata shell.
 import { NextRequest, NextResponse } from "next/server";
-import { sql } from "@/lib/db";
+import { sql, ensureSchema } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    await ensureSchema();
     const rows = await sql`
       SELECT s.id, s.name, s.origin, s.sitename, s.articles,
              s.created_at, s.updated_at,
@@ -28,6 +29,7 @@ export async function GET() {
 // Pages are appended later via /api/canon/snapshots/[id]/pages.
 export async function POST(req: NextRequest) {
   try {
+    await ensureSchema();
     const body = await req.json();
     const { name, origin, sitename, articles, groups, explanation } = body || {};
     if (!name || !origin || !Array.isArray(groups)) {
