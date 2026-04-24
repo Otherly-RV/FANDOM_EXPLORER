@@ -502,6 +502,7 @@ export default function CanonPanel({
     setError("");
     setThinking("");
     setExplanation("");
+    explanationRef.current = "";
     setProgress((p) => [...p, `calling ${o.provider} · ${o.id} for meta explanation`]);
     const llmGroups = groupsRef.current.map((g) => ({
       category: g.category,
@@ -550,8 +551,13 @@ export default function CanonPanel({
         if (ev.event === "thinking") setThinking((t) => t + String(ev.data?.text || ""));
         else if (ev.event === "explanation") {
           const txt = String(ev.data?.text || "");
-          explanationRef.current = txt;
-          setExplanation(txt);
+          const isDelta = ev.data?.delta === true;
+          if (isDelta) {
+            explanationRef.current = (explanationRef.current || "") + txt;
+          } else {
+            explanationRef.current = txt;
+          }
+          setExplanation(explanationRef.current);
         }
         else if (ev.event === "error") setError(String(ev.data?.error || "narrative error"));
       }
@@ -796,21 +802,27 @@ export default function CanonPanel({
           </div>
         )}
 
+        {error && (
+          <div style={{
+            background: "#fff4f4", border: "1px solid #f5c2c2", borderRadius: 6,
+            padding: "8px 10px", marginBottom: 10, fontSize: 12, color: "#a13232",
+          }}>
+            <strong>Error:</strong> {error}
+            {/API_KEY not set|not configured/i.test(error) && (
+              <div style={{ marginTop: 6, color: "#7a2626" }}>
+                Add <code>GEMINI_API_KEY</code> and/or <code>CLAUDE_API_KEY</code> to <code>.env.local</code>
+                {" "}and restart the dev server.
+              </div>
+            )}
+          </div>
+        )}
         {explanation
           ? <MarkdownBlock text={explanation} />
           : (
             <div>
-              {error && (
-                <div style={{
-                  background: "#fff4f4", border: "1px solid #f5c2c2", borderRadius: 6,
-                  padding: "8px 10px", marginBottom: 10, fontSize: 12, color: "#a13232",
-                }}>
-                  <strong>Error:</strong> {error}
-                </div>
-              )}
               <div className="tlabel" style={{ marginBottom: 10 }}>
                 {loading
-                  ? "Waiting for the inventory to finish…"
+                  ? "Generating meta explanation… (streaming from the model)"
                   : groups.length
                     ? "Inventory ready — click below to generate the meta explanation."
                     : "Scan the wiki to generate the explanation."}

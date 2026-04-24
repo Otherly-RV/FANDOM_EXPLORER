@@ -6,8 +6,8 @@
 // never sees the real content so it cannot paraphrase it.
 //
 // SSE events:
-//   thinking    { text }
-//   explanation { text }
+//   thinking    { text }            — delta chunk of thinking (append)
+//   explanation { text, delta? }    — if delta=true, append; otherwise replace
 //   error       { error }
 //   done        {}
 
@@ -80,12 +80,32 @@ export async function POST(req: NextRequest) {
           enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
         );
       };
+      let explanationChars = 0;
+      const onThinking = (t: string) => send("thinking", { text: t });
+      const onExplanationDelta = (t: string) => {
+        if (!t) return;
+        explanationChars += t.length;
+        send("explanation", { text: t, delta: true });
+      };
+      const onExplanationFinal = (t: string) => {
+        // Final safety net: if nothing was streamed but we have a full text,
+        // send it as a non-delta replacement.
+        if (explanationChars === 0 && t) send("explanation", { text: t, delta: false });
+      };
       try {
         const user = buildUserMessage(site, groups);
         if (provider === "claude") {
-          await streamClaude(model, user, (t) => send("thinking", { text: t }), (text) => send("explanation", { text }));
+          await streamClaude(model, user, onThinking, onExplanationDelta, onExplanationFinal);
         } else {
-          await streamGemini(model, user, (t) => send("thinking", { text: t }), (text) => send("explanation", { text }));
+          await streamGemini(model, user, onThinking, onExplanationDelta, onExplanationFinal);
+        }
+        if (explanationChars === 0) {
+          send("error", {
+            error: "The model finished without producing any explanation text. " +
+              "This usually means the thinking budget consumed the whole response, " +
+              "or the model name is not available on this API key. " +
+              `(provider=${provider}, model=${model})`,
+          });
         }
       } catch (e: any) {
         send("error", { error: String(e?.message || e) });
@@ -143,7 +163,8 @@ async function streamClaude(
   model: string,
   user: string,
   onThinking: (t: string) => void,
-  onExplanation: (t: string) => void
+  onExplanationDelta: (t: string) => void,
+  onExplanationFinal: (t: string) => void
 ): Promise<void> {
   const key = process.env.CLAUDE_API_KEY;
   if (!key) throw new Error("CLAUDE_API_KEY not set");
@@ -170,16 +191,20 @@ async function streamClaude(
     const d = ev.data?.delta;
     if (!d) continue;
     if (d.type === "thinking_delta" && typeof d.thinking === "string") onThinking(d.thinking);
-    else if (d.type === "text_delta" && typeof d.text === "string") finalText += d.text;
+    else if (d.type === "text_delta" && typeof d.text === "string") {
+      finalText += d.text;
+      onExplanationDelta(d.text);
+    }
   }
-  onExplanation(finalText);
+  onExplanationFinal(finalText);
 }
 
 async function streamGemini(
   model: string,
   user: string,
   onThinking: (t: string) => void,
-  onExplanation: (t: string) => void
+  onExplanationDelta: (t: string) => void,
+  onExplanationFinal: (t: string) => void
 ): Promise<void> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
@@ -207,10 +232,13 @@ async function streamGemini(
     for (const p of parts) {
       if (typeof p?.text !== "string") continue;
       if (p.thought === true) onThinking(p.text);
-      else finalText += p.text;
+      else {
+        finalText += p.text;
+        onExplanationDelta(p.text);
+      }
     }
   }
-  onExplanation(finalText);
+  onExplanationFinal(finalText);
 }
 
 type SSEEvent = { event: string; data: any };
