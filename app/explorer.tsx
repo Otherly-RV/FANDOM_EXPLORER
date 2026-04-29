@@ -54,7 +54,9 @@ function cardId(url: string) {
 
 export default function Explorer() {
   const [urlIn, setUrlIn] = useState("https://harrypotter.fandom.com/wiki/Harry_Potter");
-  const [maxP, setMaxP] = useState(25);
+  // 0 = unlimited (BFS until queue is empty). Was 25, which capped most crawls
+  // at ~20 nodes regardless of how many outlinks each page exposed.
+  const [maxP, setMaxP] = useState(0);
   const [crawling, setCrawling] = useState(false);
   const [viewMode, setViewMode] = useState<"network" | "tree" | "canon" | "canon-analysis">("network");
   const [allExpanded, setAllExpanded] = useState(false);
