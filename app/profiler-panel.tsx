@@ -176,12 +176,19 @@ function RootNode({
 }
 
 // ---------------------------------------------------------------------------
-// Menu node: either a pure menu header (no target) or a menu link. When it
-// has a target, expanding it reveals:
-//   1. Any nested menu items the editors defined.
-//   2. The target page's table of contents (for article pages)
-//      OR its subcategories + members (for Category: pages).
+// Menu node: either a pure menu header (no target) or a menu link.
+//
+// Curated children (already in the nav wikitext, free) are ALWAYS rendered.
+// The expand/collapse toggle controls only the lazy-loaded page contents:
+// the target page's table of contents (for article pages) OR its
+// subcategories + member pages (for Category: pages).
 // ---------------------------------------------------------------------------
+
+function normalizeTarget(target: string): string {
+  // MediaWiki link tricks: a leading ":" forces a regular link to a
+  // category/file/etc. Strip it for URL building.
+  return target.replace(/^:+/, "");
+}
 
 function MenuNode({
   node,
@@ -192,11 +199,10 @@ function MenuNode({
   origin: string;
   level: number;
 }) {
-  const [open, setOpen] = useState(level < 1);
-  const hasMenuKids = node.children.length > 0;
   const hasTarget =
     !!node.target && !/^https?:/i.test(node.target);
-  const expandable = hasMenuKids || hasTarget;
+  const [open, setOpen] = useState(false);
+  const target = node.target ? normalizeTarget(node.target) : "";
 
   return (
     <div style={{ marginLeft: level === 0 ? 0 : 14 }}>
@@ -209,16 +215,17 @@ function MenuNode({
         }}
       >
         <span
-          onClick={() => expandable && setOpen((v) => !v)}
+          onClick={() => hasTarget && setOpen((v) => !v)}
+          title={hasTarget ? (open ? "Hide page contents" : "Show page contents (TOC / category members)") : undefined}
           style={{
-            cursor: expandable ? "pointer" : "default",
+            cursor: hasTarget ? "pointer" : "default",
             fontSize: 10,
             color: "#5c54e8",
             width: 12,
             userSelect: "none",
           }}
         >
-          {expandable ? (open ? "▼" : "▶") : "·"}
+          {hasTarget ? (open ? "▼" : "▶") : "·"}
         </span>
         {node.target ? (
           <a
@@ -226,7 +233,7 @@ function MenuNode({
               /^https?:/i.test(node.target)
                 ? node.target
                 : `${origin}/wiki/${encodeURIComponent(
-                    node.target.replace(/ /g, "_")
+                    target.replace(/ /g, "_")
                   )}`
             }
             target="_blank"
@@ -254,7 +261,8 @@ function MenuNode({
           </span>
         )}
       </div>
-      {open && (
+      {/* Editor-curated submenu (free data, always rendered). */}
+      {node.children.length > 0 && (
         <div
           style={{
             borderLeft: "1px solid #eceef4",
@@ -262,18 +270,25 @@ function MenuNode({
             paddingLeft: 4,
           }}
         >
-          {/* Editor-curated submenu */}
           {node.children.map((c, i) => (
             <MenuNode key={i} node={c} origin={origin} level={level + 1} />
           ))}
-          {/* Page content: TOC for articles, members for categories. */}
-          {hasTarget && (
-            <PageContents
-              origin={origin}
-              title={node.target!}
-              level={level + 1}
-            />
-          )}
+        </div>
+      )}
+      {/* Lazy: target page's TOC or category members (network fetch). */}
+      {open && hasTarget && (
+        <div
+          style={{
+            borderLeft: "1px solid #eceef4",
+            marginLeft: 6,
+            paddingLeft: 4,
+          }}
+        >
+          <PageContents
+            origin={origin}
+            title={target}
+            level={level + 1}
+          />
         </div>
       )}
     </div>
